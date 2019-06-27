@@ -54,7 +54,6 @@ where
                 // format. `to_vec()` needed to work around lifetime error
                 let message = request.prepare.data().to_vec();
 
-                // TODO add auth
                 settlement_engine_url
                     .path_segments_mut()
                     .expect("Invalid settlement engine URL")

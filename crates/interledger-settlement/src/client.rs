@@ -23,7 +23,7 @@ impl SettlementClient {
     pub fn send_settlement<A: SettlementAccount + IldcpAccount>(
         &self,
         account: A,
-        amount: u64, // TODO: Might change to the RFC's Quantity value which contains `scale` as well depending on the decision
+        amount: u64,
     ) -> impl Future<Item = (), Error = ()> {
         if let Some(settlement_engine) = account.settlement_engine_details() {
             let mut settlement_engine_url = settlement_engine.url;
@@ -42,7 +42,6 @@ impl SettlementClient {
                 amount,
                 settlement_engine_url
             );
-            // TODO add auth
             let settlement_engine_url_clone = settlement_engine_url.clone();
             let idempotency_uuid = Uuid::new_v4().to_hyphenated().to_string();
             return Either::A(self.http_client.post(settlement_engine_url.clone())

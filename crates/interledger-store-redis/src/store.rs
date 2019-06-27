@@ -1166,11 +1166,6 @@ impl SettlementStore for RedisStore {
                 })
                 .and_then(
                     move |(_connection, ret): (_, SlowHashMap<String, String>)| {
-                        // even elements represent the key
-                        // odd elements represent the value
-                        // there must be 4 elements, a status code and a data value
-                        // stored there
-
                         let data = if let (Some(status_code), Some(data)) =
                             (ret.get("status_code"), ret.get("data"))
                         {
@@ -1197,13 +1192,13 @@ impl SettlementStore for RedisStore {
         let mut pipe = redis::pipe();
         pipe.atomic()
             .cmd("HMSET") // cannot use hset_multiple since data and status_code have different types
-            .arg(idempotency_key.clone())
+            .arg(&idempotency_key)
             .arg("status_code")
             .arg(status_code.as_u16())
             .arg("data")
             .arg(data.as_ref())
             .ignore()
-            .expire(idempotency_key.clone(), 86400)
+            .expire(&idempotency_key, 86400)
             .ignore();
         Box::new(
             pipe.query_async(self.connection.as_ref().clone())

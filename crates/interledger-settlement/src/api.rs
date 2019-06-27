@@ -1,7 +1,7 @@
 use super::{SettlementAccount, SettlementStore};
 use bytes::Bytes;
 use futures::{
-    future::{err, ok, result, Either},
+    future::{ok, result, Either},
     Future,
 };
 use hyper::{Response, StatusCode};
@@ -14,6 +14,7 @@ use std::{
     str::{self, FromStr},
     time::{Duration, SystemTime},
 };
+use tower_web::{net::ConnectionStream, ServiceBuilder};
 
 static PEER_PROTOCOL_CONDITION: [u8; 32] = [
     102, 104, 122, 173, 248, 98, 189, 119, 108, 143, 193, 139, 142, 159, 142, 32, 8, 151, 20, 133,
@@ -31,7 +32,6 @@ pub struct SettlementApi<S, O, A> {
     account_type: PhantomData<A>,
 }
 
-// TODO add authentication
 impl_web! {
     impl<S, O, A> SettlementApi<S, O, A>
     where
@@ -59,12 +59,12 @@ impl_web! {
             }).and_then(move |ret: Option<(StatusCode, Bytes)>| {
                     if let Some(d) = ret {
                         if d.0.is_success() {
-                            return Either::A(Either::A(ok(Some((d.0, d.1)))))
+                            return Ok(Some((d.0, d.1)))
                         } else {
-                            return Either::A(Either::B(err((d.0, d.1))))
+                            return Err((d.0, d.1))
                         }
                     }
-                    Either::B(ok(None))
+                    Ok(None)
                 }
             )
         }
@@ -255,6 +255,16 @@ impl_web! {
                     ))
                 }})
             )})
+        }
+
+        pub fn serve<I>(self, incoming: I) -> impl Future<Item = (), Error = ()>
+        where
+            I: ConnectionStream,
+            I::Item: Send + 'static,
+        {
+            ServiceBuilder::new()
+                .resource(self)
+                .serve(incoming)
         }
     }
 }

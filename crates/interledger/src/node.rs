@@ -14,7 +14,7 @@ use interledger_service_util::{
     BalanceService, ExchangeRateService, ExpiryShortenerService, MaxPacketAmountService,
     RateLimitService, ValidatorService,
 };
-use interledger_settlement::SettlementMessageService;
+use interledger_settlement::{SettlementApi, SettlementMessageService};
 use interledger_store_redis::{Account, ConnectionInfo, IntoConnectionInfo, RedisStoreBuilder};
 use interledger_stream::StreamReceiverService;
 use ring::{digest, hmac};
@@ -230,7 +230,6 @@ impl InterledgerNode {
                                         secret_seed,
                                         admin_auth_token,
                                         store.clone(),
-                                        outgoing_service.clone(),
                                         incoming_service.clone(),
                                     );
                                     if let Some(account_id) = default_spsp_account {
@@ -241,10 +240,14 @@ impl InterledgerNode {
                                     info!("Interledger node listening on: {}", http_address);
                                     tokio::spawn(api.serve(listener.incoming()));
 
+                                    let settlement_api = SettlementApi::new(
+                                        store.clone(),
+                                        outgoing_service.clone(),
+                                    );
                                     let listener = TcpListener::bind(&settlement_address)
                                         .expect("Unable to bind to Settlement API address");
                                     info!("Settlement API listening on: {}", settlement_address);
-                                    tokio::spawn(api.serve_settlement(listener.incoming()));
+                                    tokio::spawn(settlement_api.serve(listener.incoming()));
 
                                     Ok(())
                                 },

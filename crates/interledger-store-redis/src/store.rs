@@ -51,7 +51,7 @@ local from_account = 'accounts:' .. ARGV[1]
 local from_amount = tonumber(ARGV[2])
 local min_balance, balance, prepaid_amount = unpack(redis.call('HMGET', from_account, 'min_balance', 'balance', 'prepaid_amount'))
 balance = tonumber(balance)
-prepaid_amount = tonumber(balance)
+prepaid_amount = tonumber(prepaid_amount)
 
 -- Check that the prepare wouldn't go under the account's minimum balance
 if min_balance then

@@ -11,3 +11,4 @@ hex = "0.3.2"
 ethereum-tx-sign = { path = "../../../ethereum-tx-sign" }
 log = "0.4.6"
 tokio = "0.1.21"
+hyper = "0.12.31"

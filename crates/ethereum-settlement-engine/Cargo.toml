@@ -1,0 +1,13 @@
+[package]
+name = "ethereum-settlement-engine"
+version = "0.1.0"
+authors = ["Georgios Konstantopoulos <me@gakonst.com>"]
+edition = "2018"
+
+[dependencies]
+tower-web = "0.3.7"
+hex = "0.3.2"
+# ethereum-tx-sign = { git = "https://github.com/gakonst/ethereum-tx-sign", rev = "bfd289e2ea1394795856d78b6375e5bc041607a4" }
+ethereum-tx-sign = { path = "../../../ethereum-tx-sign" }
+log = "0.4.6"
+tokio = "0.1.21"

@@ -1,18 +1,24 @@
 use ethereum_tx_sign::web3::{
     api::Web3,
-    futures::future::{ok, Future},
+    futures::future::{ok, result, Future},
     transports::Http,
     types::{Address, TransactionReceipt, U256},
 };
 use hyper::{Response, StatusCode};
-use std::time::Duration;
+use interledger_settlement::SettlementData;
+use std::{marker::PhantomData, str::FromStr, time::Duration};
 
-use crate::{make_tx, TxSigner};
+use super::{make_tx, TxSigner};
+use super::{EthereumAccount, EthereumStore};
+use interledger_ildcp::IldcpAccount;
 
-// TODO: Move to lib.rs
-pub struct EthereumSettlementEngine<S> {
+pub struct EthereumSettlementEngine<S, Si, A> {
+    store: S,
+    signer: Si,
+    account_type: PhantomData<A>,
+
+    // Configuration data
     pub endpoint: String,
-    pub signer: S,
     pub address: Address,
     pub chain_id: u8,
     pub confirmations: usize,
@@ -20,13 +26,16 @@ pub struct EthereumSettlementEngine<S> {
 }
 
 impl_web! {
-    impl<S> EthereumSettlementEngine<S>
+    impl<S, Si, A> EthereumSettlementEngine<S, Si, A>
     where
-        S: TxSigner + Send + Sync + 'static
+        S:  EthereumStore<Account = A> + Clone + Send + Sync + 'static,
+        Si: TxSigner + Send + Sync + 'static,
+        A:  EthereumAccount + IldcpAccount + Send + Sync + 'static,
     {
         pub fn new(
             endpoint: String,
-            signer: S,
+            store: S,
+            signer: Si,
             address: Address,
             chain_id: u8,
             confirmations: usize,
@@ -34,20 +43,23 @@ impl_web! {
         ) -> Self {
             EthereumSettlementEngine {
                 endpoint,
+                store,
                 signer,
                 address,
                 chain_id,
                 confirmations,
                 poll_frequency,
+                account_type: PhantomData,
             }
         }
 
         // this should return a future that will be chained with the message call to
         // the connector amount in wei
         pub fn settle_to(
-            self,
+            &self,
             to: Address,
             amount: U256,
+            token_address: Option<Address>
         ) -> impl Future<Item = TransactionReceipt, Error = ()> {
             let (_eloop, transport) = Http::new(&self.endpoint).unwrap();
             let web3 = Web3::new(transport);
@@ -75,16 +87,54 @@ impl_web! {
             //         .and_then(|receipt| Ok(receipt))
             //     })
             let nonce = web3.eth().transaction_count(self.address.clone(), None).wait().unwrap();
-            let tx = make_tx(to, U256::from(amount), nonce);
+            let tx = make_tx(to, U256::from(amount), nonce, token_address);
             let signed_tx = self.signer.sign(tx, &1);
             let receipt = web3.send_raw_transaction_with_confirmation(signed_tx.into(), self.poll_frequency, self.confirmations).wait().unwrap();
             ok(receipt)
         }
 
         #[post("/accounts/:account_id/settlement")]
-        fn send_money(&self, account_id: String) -> impl Future<Item = Response<String>, Error = Response<()>> {
-            // self.settle_to(self.address, U256::from(300));
-            ok(Response::builder().status(200).body(account_id).unwrap())
+        fn execute_settlement(&self, account_id: String, body: SettlementData, _idempotency_key: String) -> impl Future<Item = Response<String>, Error = Response<String>> {
+            // TODO add idempotency check.
+            let _amount = U256::from(body.amount);
+            let store = self.store.clone();
+            result(A::AccountId::from_str(&account_id)
+            .map_err(move |_err| {
+                // let store = store.clone();
+                // let idempotency_key = idempotency_key.clone();
+                // move |_err| {
+                let error_msg = format!("Unable to parse account");
+                error!("{}", error_msg);
+                // let status_code = StatusCode::from_u16(400).unwrap();
+                // let data = Bytes::from(error_msg.clone());
+                // store.save_idempotent_data(idempotency_key, status_code, data);
+                Response::builder().status(400).body(error_msg).unwrap()
+            })).and_then({
+                let store = store.clone();
+                move |account_id| {
+                    store.load_account_addresses(vec![account_id])
+                    .map_err(move |_err| {
+                        let error_msg = format!("Error getting account: {}", account_id);
+                        error!("{}", error_msg);
+                        // let status_code = StatusCode::from_u16(404).unwrap();
+                        // let data = Bytes::from(error_msg.clone());
+                        // store.save_idempotent_data(idempotency_key, status_code, data);
+                        Response::builder().status(400).body(error_msg).unwrap()
+                    })
+                    .and_then(move |addresses| {
+                        // FIXME FIGURE OUT WHY WE GET LIFETIME ERRORS HERE.
+                        let (_to, _token_addr) = &addresses[0];
+                        // self.settle_to(self.address, U256::from(amount), token_addr).map_err(|_| {
+                            // let error_msg = format!("Error connecting to the blockchain.");
+                            // error!("{}", error_msg);
+                            // Response::builder().status(502).body(error_msg).unwrap()
+                        // })
+                        ok(1)
+                    })
+                }})
+            .and_then(move |_| Ok(
+                Response::builder().status(200).body("Success!".to_string()).unwrap()
+            ))
         }
     }
 }
@@ -121,7 +171,7 @@ mod tests {
         key: S,
         addr: &str,
         confs: usize,
-    ) -> (EthereumSettlementEngine<S>, std::process::Child)
+    ) -> (EthereumSettlementEngine<S, Si, A>, std::process::Child)
     where
         S: TxSigner + Send + Sync + 'static,
     {

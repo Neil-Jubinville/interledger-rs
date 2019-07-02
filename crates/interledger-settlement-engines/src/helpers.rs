@@ -18,6 +18,7 @@ impl TxSigner for &str {
     }
 }
 
+#[allow(unused)]
 pub fn to_wei(src: U256) -> U256 {
     let wei_in_ether = U256::from_dec_str("1000000000000000000").unwrap();
     src.mul(wei_in_ether)

@@ -8,4 +8,4 @@ mod eth_engine;
 mod helpers;
 
 pub use self::eth_engine::EthereumSettlementEngine;
-pub use self::helpers::{TxSigner, make_tx};
+pub use self::helpers::{make_tx, TxSigner};

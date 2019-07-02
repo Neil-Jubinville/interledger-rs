@@ -7,8 +7,13 @@ edition = "2018"
 [dependencies]
 tower-web = "0.3.7"
 hex = "0.3.2"
-# ethereum-tx-sign = { git = "https://github.com/gakonst/ethereum-tx-sign", rev = "bfd289e2ea1394795856d78b6375e5bc041607a4" }
 ethereum-tx-sign = { path = "../../../ethereum-tx-sign" }
 log = "0.4.6"
 tokio = "0.1.21"
 hyper = "0.12.31"
+futures = "0.1.25"
+interledger-settlement = { path = "../interledger-settlement", version = "0.1.0"  }
+interledger-service = { path = "../interledger-service", version = "0.2.1" }
+interledger-service-util = { path = "../interledger-service-util", version = "0.2.1" }
+interledger-ildcp = { path = "../interledger-ildcp", version = "0.2.1" }
+ethabi = "6.1.0"

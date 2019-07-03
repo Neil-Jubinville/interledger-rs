@@ -24,7 +24,7 @@ static PEER_PROTOCOL_CONDITION: [u8; 32] = [
 
 #[derive(Debug, Clone, Extract)]
 pub struct SettlementData {
-   pub amount: u64,
+    pub amount: u64,
 }
 
 pub struct SettlementApi<S, O, A> {

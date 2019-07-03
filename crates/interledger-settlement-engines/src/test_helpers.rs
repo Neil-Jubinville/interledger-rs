@@ -9,14 +9,11 @@ use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-
-
+use super::fixtures::TEST_ACCOUNT_0;
 use std::process::Command;
 use std::thread::sleep;
 use std::time::Duration;
 use tokio::runtime::Runtime;
-use super::fixtures::TEST_ACCOUNT_0;
-
 
 #[derive(Debug, Clone)]
 pub struct TestAccount {
@@ -41,7 +38,6 @@ impl EthereumAccount for TestAccount {
         Some(self.token_address)
     }
 }
-
 
 // Test Store
 #[derive(Clone)]

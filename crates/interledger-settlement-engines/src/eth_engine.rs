@@ -79,7 +79,7 @@ impl_web! {
             //         // 3. sign the transaction
             //         let signed_tx = self_clone.signer.sign(tx, &1);
             //         // 4. send the transaction
-                    
+
             //         web3.send_raw_transaction_with_confirmation(
             //             signed_tx.into(),
             //             self_clone.poll_frequency,
@@ -94,6 +94,45 @@ impl_web! {
             let signed_tx = self.signer.sign(tx, &1);
             let receipt = web3.send_raw_transaction_with_confirmation(signed_tx.into(), self.poll_frequency, self.confirmations).wait().unwrap();
             ok(receipt)
+        }
+
+        // TODO: Receive message is going to be utilized for L2 protocols and
+        // for configuring the engine. We can make the body class as:
+        // type : data related to that. depending on type it should have
+        // different encoding, via some enum. for now we cna im plement a config
+        // message, then we can add a paychann message.
+        #[post("/accounts/:account_id/messages")]
+        fn receive_message(
+            &self,
+            account_id: String,
+            body: Vec<u8>,
+            _idempotency_key: String,
+        ) -> impl Future<Item = Response<String>, Error = Response<String>> {
+            unimplemented!()
+        }
+
+        // TODO: it should take an account id, register it locally and then call
+        // the connector's messages endpoint so that it forwards it to the other
+        // engine.
+        #[post("/accounts")]
+        fn create_account(
+            &self,
+            account_id: String,
+            body: Vec<u8>,
+            _idempotency_key: String,
+        ) -> impl Future<Item = Response<String>, Error = Response<String>> {
+            unimplemented!()
+        }
+
+        // TODO : it should get the data associated with accounts
+        #[get("/accounts")]
+        fn get_account(
+            &self,
+            account_id: String,
+            body: Vec<u8>,
+            _idempotency_key: String,
+        ) -> impl Future<Item = Response<String>, Error = Response<String>> {
+            unimplemented!()
         }
 
         #[post("/accounts/:account_id/settlement")]
@@ -160,7 +199,6 @@ mod tests {
     use super::*;
     use crate::test_helpers::{test_engine, test_store};
 
-
     static ALICE_PK: &str = "380eb0f3d505f087e438eca80bc4df9a7faa24f868e69fc0440261a0fc0567dc";
     static ALICE_ADDR: &str = "3cdb3d9e1b74692bb1e3bb5fc81938151ca64b02";
     static BOB_ADDR: &str = "2fcd07047c209c46a767f8338cb0b14955826826";
@@ -171,7 +209,8 @@ mod tests {
         let (engine, mut ganache_pid) = test_engine(store, ALICE_PK, ALICE_ADDR, 0);
         let amount = U256::from(100000);
 
-        let receipt = engine.settle_to(BOB_ADDR.parse().unwrap(), amount, None)
+        let receipt = engine
+            .settle_to(BOB_ADDR.parse().unwrap(), amount, None)
             .wait()
             .unwrap();
         assert_eq!(receipt.status, Some(1.into()));

@@ -3,6 +3,16 @@
 extern crate log;
 
 #[macro_use]
+#[cfg(test)]
+extern crate lazy_static;
+
+#[cfg(test)]
+mod test_helpers;
+
+#[cfg(test)]
+mod fixtures;
+
+#[macro_use]
 extern crate tower_web;
 
 extern crate ethabi;
@@ -23,21 +33,25 @@ pub trait EthereumAccount: Account {
     }
 }
 
+/// First element is the account's ethereum adddress
+/// second element is the account's erc20 token if it's some, otherwise it means
+/// ethereum.
+pub type Addresses = (Address, Option<Address>);
+
 pub trait EthereumStore {
     type Account: EthereumAccount;
 
     /// Saves the Ethereum address associated with this account
     /// called when creating an account on the API
-    fn save_account_address(
+    fn save_account_addresses(
         &self,
-        account_id: <Self::Account as Account>::AccountId,
-        address: Address,
-        token_address: Option<Address>,
+        account_ids: Vec<<Self::Account as Account>::AccountId>,
+        data: Vec<Addresses>,
     ) -> Box<dyn Future<Item = (), Error = ()> + Send>;
 
     /// Loads the Ethereum address associated with this account
     fn load_account_addresses(
         &self,
-        account_id: Vec<<Self::Account as Account>::AccountId>,
-    ) -> Box<dyn Future<Item = Vec<(Address, Address)>, Error = ()> + Send>;
+        account_ids: Vec<<Self::Account as Account>::AccountId>,
+    ) -> Box<dyn Future<Item = Vec<Option<Addresses>>, Error = ()> + Send>;
 }

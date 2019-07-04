@@ -47,18 +47,10 @@ pub trait SettlementAccount: Account {
     }
 }
 
-// pub fn hash_sha256(preimage: &[u8]) -> [u8; 32] {
-//     let output = digest::digest(&digest::SHA256, &preimage[..]);
-//     let mut to_return: [u8; 32] = [0; 32];
-//     to_return.copy_from_slice(output.as_ref());
-//     to_return
-// }
-
 pub type IdempotentData = (StatusCode, Bytes, [u8; 32]);
 
 pub trait SettlementStore {
     type Account: SettlementAccount;
-
 
     fn update_balance_for_incoming_settlement(
         &self,

@@ -15,7 +15,9 @@ use interledger_http::HttpStore;
 use interledger_router::RouterStore;
 use interledger_service::{Account as AccountTrait, AccountStore};
 use interledger_service_util::{BalanceStore, ExchangeRateStore, RateLimitError, RateLimitStore};
-use interledger_settlement::{SettlementAccount, SettlementClient, SettlementStore};
+use interledger_settlement::{
+    IdempotentData, SettlementAccount, SettlementClient, SettlementStore,
+};
 use parking_lot::RwLock;
 use redis::{
     self, cmd, r#async::SharedConnection, Client, ConnectionInfo, PipelineCommands, Value,
@@ -1151,7 +1153,7 @@ impl SettlementStore for RedisStore {
     fn load_idempotent_data(
         &self,
         idempotency_key: Option<String>,
-    ) -> Box<dyn Future<Item = Option<(StatusCode, Bytes, [u8; 32])>, Error = ()> + Send> {
+    ) -> Box<dyn Future<Item = Option<IdempotentData>, Error = ()> + Send> {
         let idempotency_key = idempotency_key.unwrap();
         let idempotency_key_clone = idempotency_key.clone();
         Box::new(

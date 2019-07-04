@@ -68,7 +68,7 @@ impl IldcpAccount for TestAccount {
 pub struct TestStore {
     pub accounts: Arc<Vec<TestAccount>>,
     pub should_fail: bool,
-    pub cache: Arc<RwLock<HashMap<String, (StatusCode, Bytes, [u8; 32])>>>,
+    pub cache: Arc<RwLock<HashMap<String, IdempotentData>>>,
     pub cache_hits: Arc<RwLock<u64>>,
 }
 
@@ -88,7 +88,7 @@ impl SettlementStore for TestStore {
     fn load_idempotent_data(
         &self,
         idempotency_key: Option<String>,
-    ) -> Box<dyn Future<Item = Option<(StatusCode, Bytes, [u8; 32])>, Error = ()> + Send> {
+    ) -> Box<dyn Future<Item = Option<IdempotentData>, Error = ()> + Send> {
         let cache = self.cache.read();
         let d = if let Some(idempotency_key) = idempotency_key {
             if let Some(data) = cache.get(&idempotency_key) {

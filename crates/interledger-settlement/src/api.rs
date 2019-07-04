@@ -83,7 +83,7 @@ impl_web! {
             let input = format!("{}{:?}", account_id, body);
             let input_hash = get_hash_of(input.as_ref());
 
-            self.check_idempotency(idempotency_key.clone(), input_hash.clone()).map_err(|res| {
+            self.check_idempotency(idempotency_key.clone(), input_hash).map_err(|res| {
                 Response::builder().status(res.0).body(res.1).unwrap()
             })
             .and_then(move |ret: Option<(StatusCode, Bytes)>| {

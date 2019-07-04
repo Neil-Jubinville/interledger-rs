@@ -135,8 +135,7 @@ where
         let destination = request.prepare.destination();
         let to = request.to.client_address();
         let dest: &[u8] = destination.as_ref();
-        let to_ref: &[u8] = to.as_ref();
-        if dest.starts_with(to_ref) {
+        if dest.starts_with(to.as_ref()) {
             if let Ok(shared_secret) = self.connection_generator.rederive_secret(&destination) {
                 {
                     return Box::new(result(receive_money(&shared_secret, &to, request.prepare)));

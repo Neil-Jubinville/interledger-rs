@@ -1,7 +1,7 @@
 use interledger_service::{Account, OutgoingRequest, OutgoingService};
 use std::time::Duration;
 
-pub const DEFAULT_ROUND_TRIP_TIME: u64 = 1000;
+pub const DEFAULT_ROUND_TRIP_TIME: u64 = 500;
 
 pub trait RoundTripTimeAccount: Account {
     fn round_trip_time(&self) -> u64 {

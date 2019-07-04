@@ -5,7 +5,7 @@ mod common;
 
 use bytes::Bytes;
 use common::*;
-use hyper::StatusCode;
+use http::StatusCode;
 use interledger_settlement::SettlementStore;
 use redis::{cmd, r#async::SharedConnection};
 

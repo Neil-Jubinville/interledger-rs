@@ -7,7 +7,7 @@ use futures::{
 };
 use hashbrown::{HashMap, HashSet};
 
-use hyper::StatusCode;
+use http::StatusCode;
 use interledger_api::{AccountDetails, NodeStore};
 use interledger_btp::BtpStore;
 use interledger_ccp::RouteManagerStore;
@@ -118,8 +118,7 @@ if redis.call('EXISTS', idempotency_key) == 1 then
     return balance + prepaid_amount
 end
 
--- Otherwise, set it to true (there's no value to cached as a response)
--- and make it expire after 24h (86400 sec)
+-- Otherwise, set it to true and make it expire after 24h (86400 sec)
 redis.call('SET', idempotency_key, 'true', 'EX', 86400)
 
 -- Credit the incoming settlement to the balance and/or prepaid amount,

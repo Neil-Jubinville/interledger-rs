@@ -68,7 +68,7 @@ impl IldcpAccount for TestAccount {
 pub struct TestStore {
     pub accounts: Arc<Vec<TestAccount>>,
     pub should_fail: bool,
-    pub cache: Arc<RwLock<HashMap<String, (StatusCode, Bytes)>>>,
+    pub cache: Arc<RwLock<HashMap<String, (StatusCode, Bytes, [u8; 32])>>>,
     pub cache_hits: Arc<RwLock<u64>>,
 }
 
@@ -79,7 +79,7 @@ impl SettlementStore for TestStore {
         &self,
         _account_id: <Self::Account as Account>::AccountId,
         _amount: u64,
-        _idempotency_key: String,
+        _idempotency_key: Option<String>,
     ) -> Box<Future<Item = (), Error = ()> + Send> {
         let ret = if self.should_fail { err(()) } else { ok(()) };
         Box::new(ret)
@@ -87,27 +87,35 @@ impl SettlementStore for TestStore {
 
     fn load_idempotent_data(
         &self,
-        idempotency_key: String,
-    ) -> Box<dyn Future<Item = Option<(StatusCode, Bytes)>, Error = ()> + Send> {
+        idempotency_key: Option<String>,
+    ) -> Box<dyn Future<Item = Option<(StatusCode, Bytes, [u8; 32])>, Error = ()> + Send> {
         let cache = self.cache.read();
-        let d = if let Some(data) = cache.get(&idempotency_key) {
-            let mut guard = self.cache_hits.write();
-            *guard += 1; // used to test how many times this branch gets executed
-            Some((data.0, data.1.clone()))
+        let d = if let Some(idempotency_key) = idempotency_key {
+            if let Some(data) = cache.get(&idempotency_key) {
+                let mut guard = self.cache_hits.write();
+                *guard += 1; // used to test how many times this branch gets executed
+                Some((data.0, data.1.clone(), data.2))
+            } else {
+                None
+            }
         } else {
             None
         };
+
         Box::new(ok(d))
     }
 
     fn save_idempotent_data(
         &self,
-        idempotency_key: String,
+        idempotency_key: Option<String>,
+        input_hash: [u8; 32],
         status_code: StatusCode,
         data: Bytes,
     ) -> Box<dyn Future<Item = (), Error = ()> + Send> {
         let mut cache = self.cache.write();
-        cache.insert(idempotency_key, (status_code, data));
+        if let Some(idempotency_key) = idempotency_key {
+            cache.insert(idempotency_key, (status_code, data, input_hash));
+        }
         Box::new(ok(()))
     }
 }

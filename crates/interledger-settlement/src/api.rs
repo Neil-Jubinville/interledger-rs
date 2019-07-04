@@ -9,12 +9,14 @@ use interledger_ildcp::IldcpAccount;
 use interledger_packet::PrepareBuilder;
 use interledger_service::{AccountStore, OutgoingRequest, OutgoingService};
 use interledger_service_util::{Convert, ConvertDetails};
+use ring::digest::{digest, SHA256};
 use std::{
     marker::PhantomData,
     str::{self, FromStr},
     time::{Duration, SystemTime},
 };
 use tower_web::{net::ConnectionStream, ServiceBuilder};
+
 
 static PEER_PROTOCOL_CONDITION: [u8; 32] = [
     102, 104, 122, 173, 248, 98, 189, 119, 108, 143, 193, 139, 142, 159, 142, 32, 8, 151, 20, 133,
@@ -49,15 +51,20 @@ impl_web! {
 
         fn check_idempotency(
             &self,
-            idempotency_key: String
+            idempotency_key: Option<String>,
+            input_hash: [u8; 32],
         ) -> impl Future<Item = Option<(StatusCode, Bytes)>, Error = (StatusCode, String)> {
             self.store.load_idempotent_data(idempotency_key.clone())
             .map_err(move |err| {
                 let err = format!("Couldn't connect to store {:?}", err);
                 error!("{}", err);
                 (StatusCode::from_u16(500).unwrap(), err)
-            }).and_then(move |ret: Option<(StatusCode, Bytes)>| {
+            }).and_then(move |ret: Option<(StatusCode, Bytes, [u8; 32])>| {
                     if let Some(d) = ret {
+                        if d.2 != input_hash {
+                            // Stripe CONFLICT status code
+                            return Err((StatusCode::from_u16(409).unwrap(), "Provided idempotency key is tied to other input".to_string()))
+                        }
                         if d.0.is_success() {
                             return Ok(Some((d.0, d.1)))
                         } else {
@@ -70,11 +77,14 @@ impl_web! {
         }
 
         #[post("/accounts/:account_id/settlement")]
-        fn receive_settlement(&self, account_id: String, body: SettlementData, idempotency_key: String) -> impl Future<Item = Response<Bytes>, Error = Response<String>> {
+        fn receive_settlement(&self, account_id: String, body: SettlementData, idempotency_key: Option<String>) -> impl Future<Item = Response<Bytes>, Error = Response<String>> {
             let amount = body.amount;
             let store = self.store.clone();
 
-            self.check_idempotency(idempotency_key.clone()).map_err(|res| {
+            let input = format!("{}{:?}", account_id, body);
+            let input_hash = get_hash_of(input.as_ref());
+
+            self.check_idempotency(idempotency_key.clone(), input_hash.clone()).map_err(|res| {
                 Response::builder().status(res.0).body(res.1).unwrap()
             })
             .and_then(move |ret: Option<(StatusCode, Bytes)>| {
@@ -91,7 +101,7 @@ impl_web! {
                         error!("{}", error_msg);
                         let status_code = StatusCode::from_u16(400).unwrap();
                         let data = Bytes::from(error_msg.clone());
-                        store.save_idempotent_data(idempotency_key, status_code, data);
+                        store.save_idempotent_data(idempotency_key, input_hash, status_code, data);
                         Response::builder().status(400).body(error_msg).unwrap()
                     }}))
                     .and_then({
@@ -108,7 +118,7 @@ impl_web! {
 
                             let status_code = StatusCode::from_u16(404).unwrap();
                             let data = Bytes::from(error_msg.clone());
-                            store.save_idempotent_data(idempotency_key.clone(), status_code, data);
+                            store.save_idempotent_data(idempotency_key.clone(), input_hash, status_code, data);
                             Response::builder().status(404).body(error_msg).unwrap()
                         }})
                     }})
@@ -122,7 +132,7 @@ impl_web! {
                         } else {
                             let error_msg = format!("Account {} does not have settlement engine details configured. Cannot handle incoming settlement", account.id());
                             error!("{}", error_msg);
-                            store.save_idempotent_data(idempotency_key, StatusCode::from_u16(404).unwrap(), Bytes::from(error_msg.clone()));
+                            store.save_idempotent_data(idempotency_key, input_hash, StatusCode::from_u16(404).unwrap(), Bytes::from(error_msg.clone()));
                             Err(Response::builder().status(404).body(error_msg).unwrap())
                         }
                     }})
@@ -146,7 +156,7 @@ impl_web! {
                         let idempotency_key = idempotency_key.clone();
                         move |_| {
                         let ret = Bytes::from("Success");
-                        store.save_idempotent_data(idempotency_key, StatusCode::OK, ret.clone())
+                        store.save_idempotent_data(idempotency_key, input_hash, StatusCode::OK, ret.clone())
                         .map_err(move |err| {
                             let err = format!("Couldn't connect to store {:?}", err);
                             error!("{}", err);
@@ -161,11 +171,14 @@ impl_web! {
         // until it reaches the peer's settlement engine. Extract is not
         // implemented for Bytes unfortunately.
         #[post("/accounts/:account_id/messages")]
-        fn send_outgoing_message(&self, account_id: String, body: Vec<u8>, idempotency_key: String)-> impl Future<Item = Response<Bytes>, Error = Response<String>> {
+        fn send_outgoing_message(&self, account_id: String, body: Vec<u8>, idempotency_key: Option<String>)-> impl Future<Item = Response<Bytes>, Error = Response<String>> {
             let store = self.store.clone();
             let mut outgoing_handler = self.outgoing_handler.clone();
 
-            self.check_idempotency(idempotency_key.clone()).map_err(|res| {
+            let input = format!("{}{:?}", account_id, body);
+            let input_hash = get_hash_of(input.as_ref());
+
+            self.check_idempotency(idempotency_key.clone(), input_hash).map_err(|res| {
                 Response::builder().status(res.0).body(res.1).unwrap()
             })
             .and_then(move |ret: Option<(StatusCode, Bytes)>| {
@@ -182,7 +195,7 @@ impl_web! {
                     error!("{}", error_msg);
                     let status_code = StatusCode::from_u16(400).unwrap();
                     let data = Bytes::from(error_msg.clone());
-                    store.save_idempotent_data(idempotency_key, status_code, data);
+                    store.save_idempotent_data(idempotency_key, input_hash, status_code, data);
                     Response::builder().status(400).body(error_msg).unwrap()
                 }}))
                 .and_then({
@@ -196,7 +209,7 @@ impl_web! {
                     error!("{}", error_msg);
                     let status_code = StatusCode::from_u16(404).unwrap();
                     let data = Bytes::from(error_msg.clone());
-                    store.save_idempotent_data(idempotency_key, status_code, data);
+                    store.save_idempotent_data(idempotency_key, input_hash, status_code, data);
                     Response::builder().status(404).body(error_msg).unwrap()
                 }})})
                 .and_then(|accounts| {
@@ -235,14 +248,14 @@ impl_web! {
                         move |reject| {
                         let error_msg = format!("Error sending message to peer settlement engine. Packet rejected with code: {}, message: {}", reject.code(), str::from_utf8(reject.message()).unwrap_or_default());
                         error!("{}", error_msg);
-                        store.save_idempotent_data(idempotency_key, StatusCode::from_u16(502).unwrap(), Bytes::from(error_msg.clone()));
+                        store.save_idempotent_data(idempotency_key, input_hash, StatusCode::from_u16(502).unwrap(), Bytes::from(error_msg.clone()));
                         Response::builder().status(502).body(error_msg).unwrap()
                     }})
                 }})
                 .and_then({
                     move |fulfill| {
                     let data = Bytes::from(fulfill.data());
-                    store.save_idempotent_data(idempotency_key, StatusCode::OK, data.clone())
+                    store.save_idempotent_data(idempotency_key, input_hash, StatusCode::OK, data.clone())
                     .map_err(move |err| {
                         let err = format!("Couldn't connect to store {:?}", err);
                         error!("{}", err);
@@ -265,6 +278,13 @@ impl_web! {
                 .serve(incoming)
         }
     }
+
+}
+
+fn get_hash_of(preimage: &[u8]) -> [u8; 32] {
+    let mut hash = [0; 32];
+    hash.copy_from_slice(digest(&SHA256, preimage).as_ref());
+    hash
 }
 
 #[cfg(test)]
@@ -286,10 +306,8 @@ mod tests {
             let ret: Response<_> = api
                 .receive_settlement(
                     id.clone(),
-                    SettlementData {
-                        amount: SETTLEMENT_BODY,
-                    },
-                    IDEMPOTENCY.to_string(),
+                    SettlementData { amount: 200 },
+                    IDEMPOTENCY.clone(),
                 )
                 .wait()
                 .unwrap();
@@ -298,18 +316,60 @@ mod tests {
 
             // check that it's idempotent
             let ret: Response<_> = api
-                .receive_settlement(id, SettlementData { amount: 200 }, IDEMPOTENCY.to_string())
+                .receive_settlement(
+                    id.clone(),
+                    SettlementData { amount: 200 },
+                    IDEMPOTENCY.clone(),
+                )
                 .wait()
                 .unwrap();
             assert_eq!(ret.status(), 200);
             assert_eq!(ret.body(), "Success");
 
+            // fails with different account id
+            let id2 = "2".to_string();
+            let ret: Response<_> = api
+                .receive_settlement(
+                    id2.clone(),
+                    SettlementData { amount: 200 },
+                    IDEMPOTENCY.clone(),
+                )
+                .wait()
+                .unwrap_err();
+            assert_eq!(ret.status(), StatusCode::from_u16(409).unwrap());
+            assert_eq!(
+                ret.body(),
+                "Provided idempotency key is tied to other input"
+            );
+
+            // fails with different settlement data and account id
+            let ret: Response<_> = api
+                .receive_settlement(id2, SettlementData { amount: 42 }, IDEMPOTENCY.clone())
+                .wait()
+                .unwrap_err();
+            assert_eq!(ret.status(), StatusCode::from_u16(409).unwrap());
+            assert_eq!(
+                ret.body(),
+                "Provided idempotency key is tied to other input"
+            );
+
+            // fails with different settlement data and same account id
+            let ret: Response<_> = api
+                .receive_settlement(id, SettlementData { amount: 42 }, IDEMPOTENCY.clone())
+                .wait()
+                .unwrap_err();
+            assert_eq!(ret.status(), StatusCode::from_u16(409).unwrap());
+            assert_eq!(
+                ret.body(),
+                "Provided idempotency key is tied to other input"
+            );
+
             let s = store.clone();
             let cache = s.cache.read();
-            let cached_data = cache.get(&IDEMPOTENCY.to_string()).unwrap();
+            let cached_data = cache.get(&IDEMPOTENCY.clone().unwrap()).unwrap();
 
             let cache_hits = s.cache_hits.read();
-            assert_eq!(*cache_hits, 1);
+            assert_eq!(*cache_hits, 4);
             assert_eq!(cached_data.0, StatusCode::OK);
             assert_eq!(cached_data.1, &Bytes::from("Success"));
         }
@@ -326,7 +386,7 @@ mod tests {
                     SettlementData {
                         amount: SETTLEMENT_BODY,
                     },
-                    IDEMPOTENCY.to_string(),
+                    IDEMPOTENCY.clone(),
                 )
                 .wait()
                 .unwrap_err();
@@ -340,7 +400,7 @@ mod tests {
                     SettlementData {
                         amount: SETTLEMENT_BODY,
                     },
-                    IDEMPOTENCY.to_string(),
+                    IDEMPOTENCY.clone(),
                 )
                 .wait()
                 .unwrap_err();
@@ -349,7 +409,7 @@ mod tests {
 
             let s = store.clone();
             let cache = s.cache.read();
-            let cached_data = cache.get(&IDEMPOTENCY.to_string()).unwrap();
+            let cached_data = cache.get(&IDEMPOTENCY.clone().unwrap()).unwrap();
 
             let cache_hits = s.cache_hits.read();
             assert_eq!(*cache_hits, 1);
@@ -369,7 +429,7 @@ mod tests {
                     SettlementData {
                         amount: SETTLEMENT_BODY,
                     },
-                    IDEMPOTENCY.to_string(),
+                    IDEMPOTENCY.clone(),
                 )
                 .wait()
                 .unwrap_err();
@@ -390,7 +450,7 @@ mod tests {
                     SettlementData {
                         amount: SETTLEMENT_BODY,
                     },
-                    IDEMPOTENCY.to_string(),
+                    IDEMPOTENCY.clone(),
                 )
                 .wait()
                 .unwrap_err();
@@ -401,8 +461,10 @@ mod tests {
             let ret: Response<_> = api
                 .receive_settlement(
                     id.clone(),
-                    SettlementData { amount: 999 },
-                    IDEMPOTENCY.to_string(),
+                    SettlementData {
+                        amount: SETTLEMENT_BODY,
+                    },
+                    IDEMPOTENCY.clone(),
                 )
                 .wait()
                 .unwrap_err();
@@ -410,13 +472,19 @@ mod tests {
             assert_eq!(ret.body(), "Unable to parse account id: a");
 
             let _ret: Response<_> = api
-                .receive_settlement(id, SettlementData { amount: 999 }, IDEMPOTENCY.to_string())
+                .receive_settlement(
+                    id,
+                    SettlementData {
+                        amount: SETTLEMENT_BODY,
+                    },
+                    IDEMPOTENCY.clone(),
+                )
                 .wait()
                 .unwrap_err();
 
             let s = store.clone();
             let cache = s.cache.read();
-            let cached_data = cache.get(&IDEMPOTENCY.to_string()).unwrap();
+            let cached_data = cache.get(&IDEMPOTENCY.clone().unwrap()).unwrap();
 
             let cache_hits = s.cache_hits.read();
             assert_eq!(*cache_hits, 2);
@@ -436,7 +504,7 @@ mod tests {
                     SettlementData {
                         amount: SETTLEMENT_BODY,
                     },
-                    IDEMPOTENCY.to_string(),
+                    IDEMPOTENCY.clone(),
                 )
                 .wait()
                 .unwrap_err();
@@ -449,7 +517,7 @@ mod tests {
                     SettlementData {
                         amount: SETTLEMENT_BODY,
                     },
-                    IDEMPOTENCY.to_string(),
+                    IDEMPOTENCY.clone(),
                 )
                 .wait()
                 .unwrap_err(); // Bug that returns Result::OK
@@ -458,7 +526,7 @@ mod tests {
 
             let s = store.clone();
             let cache = s.cache.read();
-            let cached_data = cache.get(&IDEMPOTENCY.to_string()).unwrap();
+            let cached_data = cache.get(&IDEMPOTENCY.clone().unwrap()).unwrap();
             let cache_hits = s.cache_hits.read();
             assert_eq!(*cache_hits, 1);
             assert_eq!(cached_data.0, 404);
@@ -476,24 +544,61 @@ mod tests {
             let api = test_api(store.clone(), true);
 
             let ret: Response<_> = api
-                .send_outgoing_message(id.clone(), vec![], IDEMPOTENCY.to_string())
+                .send_outgoing_message(id.clone(), vec![], IDEMPOTENCY.clone())
                 .wait()
                 .unwrap();
             assert_eq!(ret.status(), StatusCode::OK);
             assert_eq!(ret.body(), &Bytes::from("hello!"));
 
             let ret: Response<_> = api
-                .send_outgoing_message(id, vec![], IDEMPOTENCY.to_string())
+                .send_outgoing_message(id.clone(), vec![], IDEMPOTENCY.clone())
                 .wait()
                 .unwrap();
             assert_eq!(ret.status(), StatusCode::OK);
             assert_eq!(ret.body(), &Bytes::from("hello!"));
 
+            // Using the same idempotency key with different arguments MUST
+            // fail.
+            let id2 = "1".to_string();
+            let ret: Response<_> = api
+                .send_outgoing_message(id2.clone(), vec![], IDEMPOTENCY.clone())
+                .wait()
+                .unwrap_err();
+            assert_eq!(ret.status(), StatusCode::from_u16(409).unwrap());
+            assert_eq!(
+                ret.body(),
+                "Provided idempotency key is tied to other input"
+            );
+
+            let data = vec![0, 1, 2];
+            // fails with different account id and data
+            let ret: Response<_> = api
+                .send_outgoing_message(id2, data.clone(), IDEMPOTENCY.clone())
+                .wait()
+                .unwrap_err();
+            assert_eq!(ret.status(), StatusCode::from_u16(409).unwrap());
+            assert_eq!(
+                ret.body(),
+                "Provided idempotency key is tied to other input"
+            );
+
+            // fails for same account id but different data
+            let ret: Response<_> = api
+                .send_outgoing_message(id, data, IDEMPOTENCY.clone())
+                .wait()
+                .unwrap_err();
+            assert_eq!(ret.status(), StatusCode::from_u16(409).unwrap());
+            assert_eq!(
+                ret.body(),
+                "Provided idempotency key is tied to other input"
+            );
+
+
             let s = store.clone();
             let cache = s.cache.read();
-            let cached_data = cache.get(&IDEMPOTENCY.to_string()).unwrap();
+            let cached_data = cache.get(&IDEMPOTENCY.clone().unwrap()).unwrap();
             let cache_hits = s.cache_hits.read();
-            assert_eq!(*cache_hits, 1);
+            assert_eq!(*cache_hits, 4);
             assert_eq!(cached_data.0, StatusCode::OK);
             assert_eq!(cached_data.1, &Bytes::from("hello!"));
         }
@@ -505,20 +610,20 @@ mod tests {
             let api = test_api(store.clone(), false);
 
             let ret = api
-                .send_outgoing_message(id.clone(), vec![], IDEMPOTENCY.to_string())
+                .send_outgoing_message(id.clone(), vec![], IDEMPOTENCY.clone())
                 .wait()
                 .unwrap_err();
             assert_eq!(ret.status().as_u16(), 502);
 
             let ret = api
-                .send_outgoing_message(id, vec![], IDEMPOTENCY.to_string())
+                .send_outgoing_message(id, vec![], IDEMPOTENCY.clone())
                 .wait()
                 .unwrap_err();
             assert_eq!(ret.status().as_u16(), 502);
 
             let s = store.clone();
             let cache = s.cache.read();
-            let cached_data = cache.get(&IDEMPOTENCY.to_string()).unwrap();
+            let cached_data = cache.get(&IDEMPOTENCY.clone().unwrap()).unwrap();
             let cache_hits = s.cache_hits.read();
             assert_eq!(*cache_hits, 1);
             assert_eq!(cached_data.0, 502);
@@ -534,26 +639,26 @@ mod tests {
             let api = test_api(store.clone(), true);
 
             let ret: Response<_> = api
-                .send_outgoing_message(id.clone(), vec![], IDEMPOTENCY.to_string())
+                .send_outgoing_message(id.clone(), vec![], IDEMPOTENCY.clone())
                 .wait()
                 .unwrap_err();
             assert_eq!(ret.status().as_u16(), 400);
 
             let ret: Response<_> = api
-                .send_outgoing_message(id.clone(), vec![], IDEMPOTENCY.to_string())
+                .send_outgoing_message(id.clone(), vec![], IDEMPOTENCY.clone())
                 .wait()
                 .unwrap_err();
             assert_eq!(ret.status().as_u16(), 400);
 
             let _ret: Response<_> = api
-                .send_outgoing_message(id, vec![], IDEMPOTENCY.to_string())
+                .send_outgoing_message(id, vec![], IDEMPOTENCY.clone())
                 .wait()
                 .unwrap_err();
             assert_eq!(ret.status().as_u16(), 400);
 
             let s = store.clone();
             let cache = s.cache.read();
-            let cached_data = cache.get(&IDEMPOTENCY.to_string()).unwrap();
+            let cached_data = cache.get(&IDEMPOTENCY.clone().unwrap()).unwrap();
 
             let cache_hits = s.cache_hits.read();
             assert_eq!(*cache_hits, 2);
@@ -568,20 +673,20 @@ mod tests {
             let api = test_api(store.clone(), true);
 
             let ret: Response<_> = api
-                .send_outgoing_message(id.clone(), vec![], IDEMPOTENCY.to_string())
+                .send_outgoing_message(id.clone(), vec![], IDEMPOTENCY.clone())
                 .wait()
                 .unwrap_err();
             assert_eq!(ret.status().as_u16(), 404);
 
             let ret: Response<_> = api
-                .send_outgoing_message(id, vec![], IDEMPOTENCY.to_string())
+                .send_outgoing_message(id, vec![], IDEMPOTENCY.clone())
                 .wait()
                 .unwrap_err();
             assert_eq!(ret.status().as_u16(), 404);
 
             let s = store.clone();
             let cache = s.cache.read();
-            let cached_data = cache.get(&IDEMPOTENCY.to_string()).unwrap();
+            let cached_data = cache.get(&IDEMPOTENCY.clone().unwrap()).unwrap();
 
             let cache_hits = s.cache_hits.read();
             assert_eq!(*cache_hits, 1);

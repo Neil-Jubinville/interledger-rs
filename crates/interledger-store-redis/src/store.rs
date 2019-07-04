@@ -1150,8 +1150,9 @@ impl SettlementStore for RedisStore {
 
     fn load_idempotent_data(
         &self,
-        idempotency_key: String,
-    ) -> Box<dyn Future<Item = Option<(StatusCode, Bytes)>, Error = ()> + Send> {
+        idempotency_key: Option<String>,
+    ) -> Box<dyn Future<Item = Option<(StatusCode, Bytes, [u8; 32])>, Error = ()> + Send> {
+        let idempotency_key = idempotency_key.unwrap();
         let idempotency_key_clone = idempotency_key.clone();
         Box::new(
             cmd("HGETALL")
@@ -1165,13 +1166,16 @@ impl SettlementStore for RedisStore {
                 })
                 .and_then(
                     move |(_connection, ret): (_, SlowHashMap<String, String>)| {
-                        let data = if let (Some(status_code), Some(data)) =
-                            (ret.get("status_code"), ret.get("data"))
+                        let data = if let (Some(status_code), Some(data), Some(input_hash_slice)) =
+                            (ret.get("status_code"), ret.get("data"), ret.get("input_hash"))
                         {
-                            trace!("Loaded idempotency key {} - {:?}", idempotency_key, ret);
+                            trace!("Loaded idempotency key {:?} - {:?}", idempotency_key, ret);
+                            let mut input_hash: [u8; 32] = Default::default();
+                            input_hash.copy_from_slice(input_hash_slice.as_ref());
                             Some((
                                 StatusCode::from_str(status_code).unwrap(),
                                 Bytes::from(data.clone()),
+                                input_hash,
                             ))
                         } else {
                             None
@@ -1184,10 +1188,12 @@ impl SettlementStore for RedisStore {
 
     fn save_idempotent_data(
         &self,
-        idempotency_key: String,
+        idempotency_key: Option<String>,
+        input_hash: [u8; 32],
         status_code: StatusCode,
         data: Bytes,
     ) -> Box<dyn Future<Item = (), Error = ()> + Send> {
+        let idempotency_key = idempotency_key.unwrap();
         let mut pipe = redis::pipe();
         pipe.atomic()
             .cmd("HMSET") // cannot use hset_multiple since data and status_code have different types
@@ -1196,6 +1202,8 @@ impl SettlementStore for RedisStore {
             .arg(status_code.as_u16())
             .arg("data")
             .arg(data.as_ref())
+            .arg("input_hash")
+            .arg(&input_hash)
             .ignore()
             .expire(&idempotency_key, 86400)
             .ignore();
@@ -1218,8 +1226,9 @@ impl SettlementStore for RedisStore {
         &self,
         account_id: u64,
         amount: u64,
-        idempotency_key: String,
+        idempotency_key: Option<String>,
     ) -> Box<dyn Future<Item = (), Error = ()> + Send> {
+        let idempotency_key = idempotency_key.unwrap();
         Box::new(cmd("EVAL")
             .arg(PROCESS_INCOMING_SETTLEMENT)
             .arg(0)

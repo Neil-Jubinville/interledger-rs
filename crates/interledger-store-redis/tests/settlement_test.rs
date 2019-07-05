@@ -6,7 +6,7 @@ mod common;
 use bytes::Bytes;
 use common::*;
 use http::StatusCode;
-use interledger_settlement::SettlementStore;
+use interledger_settlement::{IdempotentStore, SettlementStore};
 use redis::{cmd, r#async::SharedConnection};
 
 lazy_static! {

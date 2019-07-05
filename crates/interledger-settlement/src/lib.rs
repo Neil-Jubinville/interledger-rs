@@ -47,8 +47,6 @@ pub trait SettlementAccount: Account {
     }
 }
 
-pub type IdempotentData = (StatusCode, Bytes, [u8; 32]);
-
 pub trait SettlementStore {
     type Account: SettlementAccount;
 
@@ -58,7 +56,11 @@ pub trait SettlementStore {
         amount: u64,
         idempotency_key: Option<String>,
     ) -> Box<dyn Future<Item = (), Error = ()> + Send>;
+}
 
+pub type IdempotentData = (StatusCode, Bytes, [u8; 32]);
+
+pub trait IdempotentStore {
     /// Returns the API response that was saved when the idempotency key was used
     /// Also returns a hash of the input data which resulted in the response
     /// If the key was not used, it must return None

@@ -16,7 +16,7 @@ use interledger_router::RouterStore;
 use interledger_service::{Account as AccountTrait, AccountStore};
 use interledger_service_util::{BalanceStore, ExchangeRateStore, RateLimitError, RateLimitStore};
 use interledger_settlement::{
-    IdempotentData, SettlementAccount, SettlementClient, SettlementStore,
+    IdempotentData, IdempotentStore, SettlementAccount, SettlementClient, SettlementStore,
 };
 use parking_lot::RwLock;
 use redis::{
@@ -1147,9 +1147,7 @@ impl RateLimitStore for RedisStore {
     }
 }
 
-impl SettlementStore for RedisStore {
-    type Account = Account;
-
+impl IdempotentStore for RedisStore {
     fn load_idempotent_data(
         &self,
         idempotency_key: Option<String>,
@@ -1235,6 +1233,10 @@ impl SettlementStore for RedisStore {
             Box::new(ok(()))
         }
     }
+}
+
+impl SettlementStore for RedisStore {
+    type Account = Account;
 
     fn update_balance_for_incoming_settlement(
         &self,

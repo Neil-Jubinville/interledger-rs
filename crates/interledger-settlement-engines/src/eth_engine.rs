@@ -5,7 +5,7 @@ use ethereum_tx_sign::web3::{
     types::{Address, TransactionReceipt, U256},
 };
 use hyper::{Response, StatusCode};
-use interledger_settlement::SettlementData;
+use interledger_settlement::{IdempotentStore, SettlementData};
 use std::{marker::PhantomData, str::FromStr, time::Duration};
 
 use super::{make_tx, Addresses, TxSigner};
@@ -48,7 +48,7 @@ pub struct EthereumSettlementEngine<S, Si, A> {
 impl_web! {
     impl<S, Si, A> EthereumSettlementEngine<S, Si, A>
     where
-        S: EthereumStore<Account = A> + IdempotentStore + Clone + Send + Sync + 'static,
+        S: EthereumStore<Account = A> + IdempotentStore<Account = A> + Clone + Send + Sync + 'static,
         Si: TxSigner + Clone + Send + Sync + 'static,
         A: EthereumAccount + Send + Sync + 'static,
     {

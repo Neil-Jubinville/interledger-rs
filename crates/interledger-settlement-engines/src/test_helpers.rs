@@ -10,12 +10,12 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use super::fixtures::{ALICE, BOB};
+use hyper::StatusCode;
 use std::process::Command;
 use std::str::FromStr;
 use std::thread::sleep;
 use std::time::Duration;
 use tokio::runtime::Runtime;
-use hyper::StatusCode;
 
 #[derive(Debug, Clone)]
 pub struct TestAccount {
@@ -49,7 +49,7 @@ pub struct TestStore {
     pub should_fail: bool,
     pub addresses: Arc<RwLock<HashMap<u64, Addresses>>>,
     pub cache: Arc<RwLock<HashMap<String, (StatusCode, String)>>>,
-    pub cache_hits: Arc<RwLock<u64>>
+    pub cache_hits: Arc<RwLock<u64>>,
 }
 
 impl EthereumStore for TestStore {

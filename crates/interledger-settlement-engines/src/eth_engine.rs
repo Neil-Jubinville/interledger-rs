@@ -179,7 +179,6 @@ impl_web! {
             &self,
             account_id: String,
         ) -> impl Future<Item = Response<String>, Error = Response<String>> {
-            let self_clone = self.clone();
             let store = self.store.clone();
             result(A::AccountId::from_str(&account_id).map_err(move |_err| {
                 let error_msg = format!("Unable to parse account");
@@ -273,7 +272,7 @@ mod tests {
     // All tests involving ganache must be run in 1 suite so that they run serially
     fn test_execute_settlement() {
         let bob = BOB.clone();
-        let store = test_store(bob.clone(), false, true);
+        let store = test_store(bob.clone(), false, true, true);
         let (engine, mut ganache_pid) = test_engine(store, ALICE_PK, ALICE_ADDR, 0);
         let amount = U256::from(100000);
 
@@ -293,9 +292,8 @@ mod tests {
     #[test]
     fn test_create_get_account() {
         let bob: TestAccount = BOB.clone();
-        let store = test_store(bob.clone(), false, false);
+        let store = test_store(bob.clone(), false, false, false);
         let engine = test_api(store, ALICE_PK, ALICE_ADDR, 0);
-        let amount = U256::from(100000);
 
         // Bob's ILP details have already been inserted. This endpoint gets
         // automatically called when creating the account.

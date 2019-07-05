@@ -56,14 +56,13 @@ impl EthereumStore for TestStore {
 
     fn save_account_addresses(
         &self,
-        _account_ids: Vec<u64>,
-        _data: Vec<Addresses>,
+        account_ids: Vec<u64>,
+        data: Vec<Addresses>,
     ) -> Box<Future<Item = (), Error = ()> + Send> {
-        // TODO
-        // for (acc, d) in account_ids.into_iter().zip(data.into_iter()) {
-        // let mut guard = self.addresses.write();
-        // *guard.insert(acc, d);
-        // }
+        let mut guard = self.addresses.write();
+        for (acc, d) in account_ids.into_iter().zip(data.into_iter()) {
+            (*guard).insert(acc, d);
+        }
         Box::new(ok(()))
     }
 
@@ -112,18 +111,19 @@ impl AccountStore for TestStore {
 }
 
 impl TestStore {
-    pub fn new(accs: Vec<TestAccount>, should_fail: bool) -> Self {
+    pub fn new(accs: Vec<TestAccount>, should_fail: bool, initialize: bool) -> Self {
         let mut addresses = HashMap::new();
-        for account in &accs {
-            let token_address = if !account.no_details {
-                Some(account.token_address)
-            } else {
-                None
-            };
-            let account_address = account.address;
-            addresses.insert(account.id, (account_address, token_address));
+        if initialize {
+            for account in &accs {
+                let token_address = if !account.no_details {
+                    Some(account.token_address)
+                } else {
+                    None
+                };
+                let account_address = account.address;
+                addresses.insert(account.id, (account_address, token_address));
+            }
         }
-        println!("INITIALIZING WITH: {:?}", addresses);
 
         TestStore {
             accounts: Arc::new(accs),
@@ -217,8 +217,13 @@ where
     )
 }
 
-pub fn test_store(account: TestAccount, store_fails: bool, account_has_engine: bool) -> TestStore {
+pub fn test_store(
+    account: TestAccount,
+    store_fails: bool,
+    account_has_engine: bool,
+    initialize: bool,
+) -> TestStore {
     let mut acc = account.clone();
     acc.no_details = !account_has_engine;
-    TestStore::new(vec![acc], store_fails)
+    TestStore::new(vec![acc], store_fails, initialize)
 }

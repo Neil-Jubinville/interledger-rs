@@ -48,7 +48,7 @@ pub struct EthereumSettlementEngine<S, Si, A> {
 impl_web! {
     impl<S, Si, A> EthereumSettlementEngine<S, Si, A>
     where
-        S: EthereumStore<Account = A> + Clone + Send + Sync + 'static,
+        S: EthereumStore<Account = A> + IdempotentStore + Clone + Send + Sync + 'static,
         Si: TxSigner + Clone + Send + Sync + 'static,
         A: EthereumAccount + Send + Sync + 'static,
     {
@@ -227,14 +227,18 @@ impl_web! {
             &self,
             account_id: String,
             body: SettlementData,
-            _idempotency_key: Option<String>,
+            idempotency_key: Option<String>,
         ) -> impl Future<Item = Response<String>, Error = Response<String>> {
             // TODO add idempotency check.
             let amount = U256::from(body.amount);
             let self_clone = self.clone();
+            let store = self.store.clone();
             self.load_account(account_id).map_err(|err| {
                 let error_msg = format!("Error loading account {:?}", err);
                 error!("{}", error_msg);
+                if let Some(idempotency_key) = idempotency_key {
+                    store.save_idempotent_data(idempotency_key, StatusCode::from_u16(400).unwrap(), Bytes::from(error_msg));
+                }
                 Response::builder().status(400).body(error_msg).unwrap()
             })
             .and_then(move |(_account_id, addresses)| {
@@ -297,24 +301,49 @@ mod tests {
     use crate::test_helpers::{test_api, test_engine, test_store, TestAccount};
     static ALICE_PK: &str = "380eb0f3d505f087e438eca80bc4df9a7faa24f868e69fc0440261a0fc0567dc";
     static ALICE_ADDR: &str = "3cdb3d9e1b74692bb1e3bb5fc81938151ca64b02";
+    static IDEMPOTENCY: &str = "AJKJNUjM0oyiAN46";
 
     #[test]
     // All tests involving ganache must be run in 1 suite so that they run serially
     fn test_execute_settlement() {
         let bob = BOB.clone();
         let store = test_store(bob.clone(), false, true, true);
-        let (engine, mut ganache_pid) = test_engine(store, ALICE_PK, ALICE_ADDR, 0);
+        let (engine, mut ganache_pid) = test_engine(store.clone(), ALICE_PK, ALICE_ADDR, 0);
         let amount = U256::from(100000);
 
         let receipt = engine.settle_to(bob.address, amount, None).wait().unwrap();
         assert_eq!(receipt.status, Some(1.into()));
 
         let ret: Response<_> = engine
-            .execute_settlement(bob.id.to_string(), SettlementData { amount: 100 }, None)
+            .execute_settlement(
+                bob.id.to_string(),
+                SettlementData { amount: 100 },
+                Some(IDEMPOTENCY.to_string()),
+            )
             .wait()
             .unwrap();
         assert_eq!(ret.status().as_u16(), 200);
         assert_eq!(ret.body(), "OK");
+
+        let ret: Response<_> = engine
+            .execute_settlement(
+                bob.id.to_string(),
+                SettlementData { amount: 100 },
+                Some(IDEMPOTENCY.to_string()),
+            )
+            .wait()
+            .unwrap();
+        assert_eq!(ret.status().as_u16(), 200);
+        assert_eq!(ret.body(), "OK");
+
+        let s = store.clone();
+        let cache = s.cache.read();
+        let cached_data = cache.get(&IDEMPOTENCY.to_string()).unwrap();
+
+        let cache_hits = s.cache_hits.read();
+        assert_eq!(*cache_hits, 1);
+        assert_eq!(cached_data.0, 200);
+        assert_eq!(cached_data.1, "OK".to_string());
 
         ganache_pid.kill().unwrap();
     }

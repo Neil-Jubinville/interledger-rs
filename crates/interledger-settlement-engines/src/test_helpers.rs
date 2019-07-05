@@ -15,6 +15,7 @@ use std::str::FromStr;
 use std::thread::sleep;
 use std::time::Duration;
 use tokio::runtime::Runtime;
+use hyper::StatusCode;
 
 #[derive(Debug, Clone)]
 pub struct TestAccount {
@@ -47,8 +48,8 @@ pub struct TestStore {
     pub accounts: Arc<Vec<TestAccount>>,
     pub should_fail: bool,
     pub addresses: Arc<RwLock<HashMap<u64, Addresses>>>,
-    // pub cache: Arc<RwLock<HashMap<String, (StatusCode, Bytes)>>>,
-    // pub cache_hits: Arc<RwLock<u64>>
+    pub cache: Arc<RwLock<HashMap<String, (StatusCode, String)>>>,
+    pub cache_hits: Arc<RwLock<u64>>
 }
 
 impl EthereumStore for TestStore {
@@ -129,8 +130,8 @@ impl TestStore {
             accounts: Arc::new(accs),
             should_fail,
             addresses: Arc::new(RwLock::new(addresses)),
-            // cache: Arc::new(RwLock::new(HashMap::new())),
-            // cache_hits: Arc::new(RwLock::new(0)),
+            cache: Arc::new(RwLock::new(HashMap::new())),
+            cache_hits: Arc::new(RwLock::new(0)),
         }
     }
 }

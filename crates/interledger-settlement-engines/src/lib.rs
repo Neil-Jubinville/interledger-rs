@@ -6,6 +6,9 @@ extern crate log;
 #[cfg(test)]
 extern crate lazy_static;
 
+#[macro_use]
+extern crate serde_json;
+
 #[cfg(test)]
 mod test_helpers;
 

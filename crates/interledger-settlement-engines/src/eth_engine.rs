@@ -8,7 +8,7 @@ use hyper::{Response, StatusCode};
 use interledger_settlement::SettlementData;
 use std::{marker::PhantomData, str::FromStr, time::Duration};
 
-use super::{make_tx, TxSigner};
+use super::{make_tx, Addresses, TxSigner};
 use super::{EthereumAccount, EthereumStore};
 
 #[derive(Debug, Clone, Extract)]
@@ -173,17 +173,35 @@ impl_web! {
         }
 
         // TODO : it should get the data associated with accounts
-        #[get("/accounts")]
+        #[get("/accounts/:id")]
+        #[content_type("application/json")]
         fn get_account(
             &self,
             account_id: String,
-            body: Vec<u8>,
-            _idempotency_key: String,
         ) -> impl Future<Item = Response<String>, Error = Response<String>> {
-            ok(Response::builder()
-                .status(200)
-                .body("Success!".to_string())
-                .unwrap())
+            let self_clone = self.clone();
+            let store = self.store.clone();
+            result(A::AccountId::from_str(&account_id).map_err(move |_err| {
+                let error_msg = format!("Unable to parse account");
+                error!("{}", error_msg);
+                Response::builder().status(400).body(error_msg).unwrap()
+            }))
+            .and_then({
+                move |account_id| {
+                    store
+                        .load_account_addresses(vec![account_id])
+                        .map_err(move |_err| {
+                            let error_msg = format!("Error getting account: {}", account_id);
+                            error!("{}", error_msg);
+                            Response::builder().status(400).body(error_msg).unwrap()
+                        })
+                }
+            })
+            .and_then(move |addresses| {
+                let (ethereum_address, token_address) = addresses[0];
+                let ret = json!({"ethereum_address" : ethereum_address, "token_address" : token_address}).to_string();
+                ok(Response::builder().status(200).body(ret).unwrap())
+            })
         }
 
         #[post("/accounts/:account_id/settlement")]
@@ -273,9 +291,9 @@ mod tests {
     }
 
     #[test]
-    fn test_create_account() {
+    fn test_create_get_account() {
         let bob: TestAccount = BOB.clone();
-        let store = test_store(bob.clone(), false, true);
+        let store = test_store(bob.clone(), false, false);
         let engine = test_api(store, ALICE_PK, ALICE_ADDR, 0);
         let amount = U256::from(100000);
 
@@ -294,6 +312,11 @@ mod tests {
             .unwrap();
         assert_eq!(ret.status().as_u16(), 201);
         assert_eq!(ret.body(), "CREATED");
+
+        let ret: Response<_> = engine.get_account(bob.id.to_string()).wait().unwrap();
+        assert_eq!(ret.status().as_u16(), 200);
+        let data = json!({"ethereum_address" : bob.address, "token_address" : null}).to_string();
+        assert_eq!(ret.body(), &data);
 
         // todo: idempotency checks
     }

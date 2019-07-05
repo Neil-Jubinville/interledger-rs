@@ -157,50 +157,64 @@ impl_web! {
             })
         }
 
-        // TODO: it should take an account id, register it locally and then call
-        // the connector's messages endpoint so that it forwards it to the other
-        // engine.
         #[post("/accounts")]
         fn create_account(
             &self,
             account_id: String,
             body: CreateAccountDetails,
-            _idempotency_key: Option<String>,
+            idempotency_key: Option<String>,
         ) -> impl Future<Item = Response<String>, Error = Response<String>> {
-            // TODO idempotency check
             let store: S = self.store.clone();
-            let data = (body.ethereum_address, body.token_address);
+            let store_clone = self.store.clone();
+            let store_clone2 = self.store.clone();
+            let idempotency_key_clone = idempotency_key.clone();
 
-            result(A::AccountId::from_str(&account_id).map_err(move |_err| {
-                // let store = store.clone();
-                // let idempotency_key = idempotency_key.clone();
-                // move |_err| {
-                let error_msg = format!("Unable to parse account");
-                error!("{}", error_msg);
-                // let status_code = StatusCode::from_u16(400).unwrap();
-                // let data = Bytes::from(error_msg.clone());
-                // store.save_idempotent_data(idempotency_key, status_code, data);
-                Response::builder().status(400).body(error_msg).unwrap()
-            }))
-            .and_then({
-                move |account_id| {
-                    store.save_account_addresses(vec![account_id], vec![data])
-                        .map_err(move |_err| {
-                            let error_msg = format!("Error creating account: {}, {:?}", account_id, data);
-                            error!("{}", error_msg);
-                            // let status_code = StatusCode::from_u16(404).unwrap();
-                            // let data = Bytes::from(error_msg.clone());
-                            // store.save_idempotent_data(idempotency_key, status_code, data);
-                            Response::builder().status(400).body(error_msg).unwrap()
-                        })
+            let data = (body.ethereum_address, body.token_address);
+            let input = format!("{}{:?}", account_id, body);
+            let input_hash = get_hash_of(input.as_ref());
+
+            self.check_idempotency(idempotency_key.clone(), input_hash).map_err(|res| {
+                Response::builder().status(res.0).body(res.1).unwrap()
+            })
+            .and_then(move |ret: Option<(StatusCode, Bytes)>| {
+                if let Some(d) = ret {
+                    return Either::A(ok(Response::builder().status(d.0).body(String::from_utf8_lossy(&d.1).to_string()).unwrap()));
                 }
+                Either::B(
+                    result(A::AccountId::from_str(&account_id).map_err({
+                        let store = store.clone();
+                        let idempotency_key = idempotency_key.clone();
+                        move |_err| {
+                        let error_msg = format!("Unable to parse account");
+                        error!("{}", error_msg);
+                        let status_code = StatusCode::from_u16(400).unwrap();
+                        let data = Bytes::from(error_msg.clone());
+                        store.save_idempotent_data(idempotency_key, input_hash, status_code, data);
+                        Response::builder().status(status_code).body(error_msg).unwrap()
+                    }}))
+                    .and_then({
+                        move |account_id| {
+                            store.save_account_addresses(vec![account_id], vec![data])
+                                .map_err(move |_err| {
+                                    let error_msg = format!("Error creating account: {}, {:?}", account_id, data);
+                                    error!("{}", error_msg);
+                                    let status_code = StatusCode::from_u16(400).unwrap();
+                                    let data = Bytes::from(error_msg.clone());
+                                    store_clone.save_idempotent_data(idempotency_key, input_hash, status_code, data);
+                                    Response::builder().status(400).body(error_msg).unwrap()
+                                })
+                        }
+                    })
+                    .and_then(move |_| {
+                        store_clone2.save_idempotent_data(idempotency_key_clone, input_hash, StatusCode::from_u16(201).unwrap(), Bytes::from("CREATED"));
+                        Ok(Response::builder()
+                            .status(201)
+                            .body("CREATED".to_string())
+                            .unwrap())
+                    })
+                )
             })
-            .and_then(move |_| {
-                Ok(Response::builder()
-                    .status(201)
-                    .body("CREATED".to_string())
-                    .unwrap())
-            })
+
 
         }
 
@@ -238,11 +252,10 @@ impl_web! {
             let store_clone2 = store.clone();
             let idempotency_key_clone = idempotency_key.clone();
             let idempotency_key_clone2 = idempotency_key.clone();
-            let idempotency_key_clone3 = idempotency_key.clone();
 
             let input = format!("{}{:?}", account_id, body);
             let input_hash = get_hash_of(input.as_ref());
-            self.check_idempotency(idempotency_key_clone3, input_hash).map_err(|res| {
+            self.check_idempotency(idempotency_key.clone(), input_hash).map_err(|res| {
                 Response::builder().status(res.0).body(res.1).unwrap()
             })
             .and_then(move |ret: Option<(StatusCode, Bytes)>| {
@@ -321,6 +334,8 @@ impl_web! {
                 (StatusCode::from_u16(500).unwrap(), err)
             }).and_then(move |ret: Option<(StatusCode, Bytes, [u8; 32])>| {
                     if let Some(d) = ret {
+                        println!("GOT RET: {:?}", d.2);
+                        println!("GOT INPUT HASH {:?}", input_hash);
                         if d.2 != input_hash {
                             // Stripe CONFLICT status code
                             return Err((StatusCode::from_u16(409).unwrap(), "Provided idempotency key is tied to other input".to_string()))
@@ -449,7 +464,7 @@ mod tests {
     fn test_create_get_account() {
         let bob: TestAccount = BOB.clone();
         let store = test_store(bob.clone(), false, false, false);
-        let engine = test_api(store, ALICE_PK, ALICE_ADDR, 0);
+        let engine = test_api(store.clone(), ALICE_PK, ALICE_ADDR, 0);
 
         // Bob's ILP details have already been inserted. This endpoint gets
         // automatically called when creating the account.
@@ -460,7 +475,7 @@ mod tests {
                     ethereum_address: bob.address,
                     token_address: None,
                 },
-                None,
+                Some(IDEMPOTENCY.to_string()),
             )
             .wait()
             .unwrap();
@@ -472,7 +487,85 @@ mod tests {
         let data = json!({"ethereum_address" : bob.address, "token_address" : null}).to_string();
         assert_eq!(ret.body(), &data);
 
-        // todo: idempotency checks
-    }
+        // check that it's idempotent
+        let ret: Response<_> = engine
+            .create_account(
+                bob.id.to_string(),
+                CreateAccountDetails {
+                    ethereum_address: bob.address,
+                    token_address: None,
+                },
+                Some(IDEMPOTENCY.to_string()),
+            )
+            .wait()
+            .unwrap();
+        assert_eq!(ret.status().as_u16(), 201);
+        assert_eq!(ret.body(), "CREATED");
 
+        // fails with different id and same data
+        println!("trying different id");
+        let ret: Response<_> = engine
+            .create_account(
+                "42".to_string(),
+                CreateAccountDetails {
+                    ethereum_address: bob.address,
+                    token_address: None,
+                },
+                Some(IDEMPOTENCY.to_string()),
+            )
+            .wait()
+            .unwrap_err();
+        assert_eq!(ret.status().as_u16(), 409);
+        assert_eq!(
+            ret.body(),
+            "Provided idempotency key is tied to other input"
+        );
+
+        // fails with same id and different data
+        println!("trying different data");
+        let ret: Response<_> = engine
+            .create_account(
+                bob.id.to_string(),
+                CreateAccountDetails {
+                    ethereum_address: ALICE_ADDR.parse().unwrap(),
+                    token_address: None,
+                },
+                Some(IDEMPOTENCY.to_string()),
+            )
+            .wait()
+            .unwrap_err();
+        assert_eq!(ret.status().as_u16(), 409);
+        assert_eq!(
+            ret.body(),
+            "Provided idempotency key is tied to other input"
+        );
+
+        // fails with different id and different data
+        println!("trying both different");
+        let ret: Response<_> = engine
+            .create_account(
+                "42".to_string(),
+                CreateAccountDetails {
+                    ethereum_address: ALICE_ADDR.parse().unwrap(),
+                    token_address: None,
+                },
+                Some(IDEMPOTENCY.to_string()),
+            )
+            .wait()
+            .unwrap_err();
+        assert_eq!(ret.status().as_u16(), 409);
+        assert_eq!(
+            ret.body(),
+            "Provided idempotency key is tied to other input"
+        );
+
+        let s = store.clone();
+        let cache = s.cache.read();
+        let cached_data = cache.get(&IDEMPOTENCY.to_string()).unwrap();
+
+        let cache_hits = s.cache_hits.read();
+        assert_eq!(*cache_hits, 4);
+        assert_eq!(cached_data.0, 201);
+        assert_eq!(cached_data.1, "CREATED".to_string());
+    }
 }

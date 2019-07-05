@@ -194,17 +194,6 @@ impl TestAccount {
     }
 }
 
-// Futures helper taken from the store_helpers in interledger-store-redis.
-pub fn block_on<F>(f: F) -> Result<F::Item, F::Error>
-where
-    F: Future + Send + 'static,
-    F::Item: Send,
-    F::Error: Send,
-{
-    let mut runtime = Runtime::new().unwrap();
-    runtime.block_on(f)
-}
-
 // Helper to create a new engine and spin a new ganache instance.
 pub fn test_engine<Si, S, A>(
     store: S,

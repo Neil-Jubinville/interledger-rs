@@ -376,7 +376,7 @@ mod tests {
         let bob = BOB.clone();
         let store = test_store(bob.clone(), false, true, true);
         let (engine, mut ganache_pid) = test_engine(store.clone(), ALICE_PK, ALICE_ADDR, 0);
-        let amount = U256::from(100000);
+        let amount = U256::from(100_000);
 
         let receipt = engine.settle_to(bob.address, amount, None).wait().unwrap();
         assert_eq!(receipt.status, Some(1.into()));

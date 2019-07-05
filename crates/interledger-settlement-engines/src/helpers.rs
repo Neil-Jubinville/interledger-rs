@@ -41,7 +41,7 @@ pub fn make_tx(
         RawTransaction {
             to: Some(token_address),
             nonce,
-            data: data,
+            data,
             gas: 70000.into(), // ERC20 transactions cost approximately 40k gas.
             gas_price: 20000.into(),
             value: U256::zero(),

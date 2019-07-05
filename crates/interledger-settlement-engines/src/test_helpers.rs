@@ -11,13 +11,11 @@ use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use super::fixtures::{ALICE, BOB};
 use hyper::StatusCode;
 use std::process::Command;
 use std::str::FromStr;
 use std::thread::sleep;
 use std::time::Duration;
-use tokio::runtime::Runtime;
 
 #[derive(Debug, Clone)]
 pub struct TestAccount {

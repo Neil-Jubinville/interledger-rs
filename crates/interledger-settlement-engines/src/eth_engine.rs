@@ -1,12 +1,14 @@
 use ethereum_tx_sign::web3::{
     api::Web3,
-    futures::future::{ok, result, Future},
+    futures::future::{Either, ok, result, Future},
     transports::Http,
     types::{Address, TransactionReceipt, U256},
 };
 use hyper::{Response, StatusCode};
 use interledger_settlement::{IdempotentStore, SettlementData};
 use std::{marker::PhantomData, str::FromStr, time::Duration};
+use bytes::Bytes;
+use ring::digest::{digest, SHA256};
 
 use super::{make_tx, Addresses, TxSigner};
 use super::{EthereumAccount, EthereumStore};
@@ -48,7 +50,7 @@ pub struct EthereumSettlementEngine<S, Si, A> {
 impl_web! {
     impl<S, Si, A> EthereumSettlementEngine<S, Si, A>
     where
-        S: EthereumStore<Account = A> + IdempotentStore<Account = A> + Clone + Send + Sync + 'static,
+        S: EthereumStore<Account = A> + IdempotentStore + Clone + Send + Sync + 'static,
         Si: TxSigner + Clone + Send + Sync + 'static,
         A: EthereumAccount + Send + Sync + 'static,
     {
@@ -229,32 +231,48 @@ impl_web! {
             body: SettlementData,
             idempotency_key: Option<String>,
         ) -> impl Future<Item = Response<String>, Error = Response<String>> {
-            // TODO add idempotency check.
             let amount = U256::from(body.amount);
             let self_clone = self.clone();
             let store = self.store.clone();
-            self.load_account(account_id).map_err(|err| {
-                let error_msg = format!("Error loading account {:?}", err);
-                error!("{}", error_msg);
-                if let Some(idempotency_key) = idempotency_key {
-                    store.save_idempotent_data(idempotency_key, StatusCode::from_u16(400).unwrap(), Bytes::from(error_msg));
+            let store_clone = store.clone();
+            let store_clone2 = store.clone();
+            let idempotency_key_clone = idempotency_key.clone();
+            let idempotency_key_clone2 = idempotency_key.clone();
+            let idempotency_key_clone3 = idempotency_key.clone();
+
+            let input = format!("{}{:?}", account_id, body);
+            let input_hash = get_hash_of(input.as_ref());
+            self.check_idempotency(idempotency_key_clone3, input_hash).map_err(|res| {
+                Response::builder().status(res.0).body(res.1).unwrap()
+            })
+            .and_then(move |ret: Option<(StatusCode, Bytes)>| {
+                if let Some(d) = ret {
+                    return Either::A(ok(Response::builder().status(d.0).body(String::from_utf8_lossy(&d.1).to_string()).unwrap()));
                 }
-                Response::builder().status(400).body(error_msg).unwrap()
-            })
-            .and_then(move |(_account_id, addresses)| {
-                let (to, token_addr) = addresses;
-                self_clone.settle_to(to, amount, token_addr).map_err(|_| {
-                    let error_msg = format!("Error connecting to the blockchain.");
-                    error!("{}", error_msg);
-                    // maybe replace with a per-blockchain specific status code?
-                    Response::builder().status(502).body(error_msg).unwrap()
-                })
-            })
-            .and_then(move |_| {
-                Ok(Response::builder()
-                    .status(200)
-                    .body("OK".to_string())
-                    .unwrap())
+                Either::B(
+                    self_clone.load_account(account_id).map_err(move |err| {
+                        let error_msg = format!("Error loading account {:?}", err);
+                        error!("{}", error_msg);
+                        store.save_idempotent_data(idempotency_key, input_hash, StatusCode::from_u16(400).unwrap(), Bytes::from(error_msg.clone()));
+                        Response::builder().status(400).body(error_msg).unwrap()
+                    })
+                    .and_then(move |(_account_id, addresses)| {
+                        let (to, token_addr) = addresses;
+                        self_clone.settle_to(to, amount, token_addr).map_err(move |_| {
+                            let error_msg = format!("Error connecting to the blockchain.");
+                            error!("{}", error_msg);
+                            // maybe replace with a per-blockchain specific status code?
+                            store_clone.save_idempotent_data(idempotency_key_clone, input_hash, StatusCode::from_u16(502).unwrap(), Bytes::from(error_msg.clone()));
+                            Response::builder().status(502).body(error_msg).unwrap()
+                        })
+                    })
+                    .and_then(move |_| {
+                        store_clone2.save_idempotent_data(idempotency_key_clone2, input_hash, StatusCode::from_u16(200).unwrap(), Bytes::from("OK".to_string()));
+                        Ok(Response::builder()
+                            .status(200)
+                            .body("OK".to_string())
+                            .unwrap())
+                    }))
             })
         }
 
@@ -290,7 +308,41 @@ impl_web! {
                         })
                 })
         }
+
+        fn check_idempotency(
+            &self,
+            idempotency_key: Option<String>,
+            input_hash: [u8; 32],
+        ) -> impl Future<Item = Option<(StatusCode, Bytes)>, Error = (StatusCode, String)> {
+            self.store.load_idempotent_data(idempotency_key.clone())
+            .map_err(move |err| {
+                let err = format!("Couldn't connect to store {:?}", err);
+                error!("{}", err);
+                (StatusCode::from_u16(500).unwrap(), err)
+            }).and_then(move |ret: Option<(StatusCode, Bytes, [u8; 32])>| {
+                    if let Some(d) = ret {
+                        if d.2 != input_hash {
+                            // Stripe CONFLICT status code
+                            return Err((StatusCode::from_u16(409).unwrap(), "Provided idempotency key is tied to other input".to_string()))
+                        }
+                        if d.0.is_success() {
+                            return Ok(Some((d.0, d.1)))
+                        } else {
+                            return Err((d.0, String::from_utf8_lossy(&d.1).to_string()))
+                        }
+                    }
+                    Ok(None)
+                }
+            )
+        }
+
     }
+}
+
+fn get_hash_of(preimage: &[u8]) -> [u8; 32] {
+    let mut hash = [0; 32];
+    hash.copy_from_slice(digest(&SHA256, preimage).as_ref());
+    hash
 }
 
 #[cfg(test)]
@@ -336,12 +388,48 @@ mod tests {
         assert_eq!(ret.status().as_u16(), 200);
         assert_eq!(ret.body(), "OK");
 
+        // fails with different id and same data
+        let ret: Response<_> = engine
+            .execute_settlement(
+                "42".to_string(),
+                SettlementData { amount: 100 },
+                Some(IDEMPOTENCY.to_string()),
+            )
+            .wait()
+            .unwrap_err();
+        assert_eq!(ret.status().as_u16(), 409);
+        assert_eq!(ret.body(), "Provided idempotency key is tied to other input");
+
+        // fails with same id and different data
+        let ret: Response<_> = engine
+            .execute_settlement(
+                bob.id.to_string(),
+                SettlementData { amount: 42 },
+                Some(IDEMPOTENCY.to_string()),
+            )
+            .wait()
+            .unwrap_err();
+        assert_eq!(ret.status().as_u16(), 409);
+        assert_eq!(ret.body(), "Provided idempotency key is tied to other input");
+
+        // fails with different id and different data
+        let ret: Response<_> = engine
+            .execute_settlement(
+                "42".to_string(),
+                SettlementData { amount: 42 },
+                Some(IDEMPOTENCY.to_string()),
+            )
+            .wait()
+            .unwrap_err();
+        assert_eq!(ret.status().as_u16(), 409);
+        assert_eq!(ret.body(), "Provided idempotency key is tied to other input");
+
         let s = store.clone();
         let cache = s.cache.read();
         let cached_data = cache.get(&IDEMPOTENCY.to_string()).unwrap();
 
         let cache_hits = s.cache_hits.read();
-        assert_eq!(*cache_hits, 1);
+        assert_eq!(*cache_hits, 4);
         assert_eq!(cached_data.0, 200);
         assert_eq!(cached_data.1, "OK".to_string());
 

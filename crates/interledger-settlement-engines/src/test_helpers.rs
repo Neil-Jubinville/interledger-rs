@@ -9,8 +9,9 @@ use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use super::fixtures::TEST_ACCOUNT_0;
+use super::fixtures::{ALICE, BOB};
 use std::process::Command;
+use std::str::FromStr;
 use std::thread::sleep;
 use std::time::Duration;
 use tokio::runtime::Runtime;
@@ -18,6 +19,7 @@ use tokio::runtime::Runtime;
 #[derive(Debug, Clone)]
 pub struct TestAccount {
     pub id: u64,
+    pub address: Address,
     pub token_address: Address,
     pub no_details: bool,
 }
@@ -68,14 +70,15 @@ impl EthereumStore for TestStore {
     fn load_account_addresses(
         &self,
         account_ids: Vec<u64>,
-    ) -> Box<dyn Future<Item = Vec<Option<Addresses>>, Error = ()> + Send> {
+    ) -> Box<dyn Future<Item = Vec<Addresses>, Error = ()> + Send> {
         let mut v = Vec::with_capacity(account_ids.len());
         let addresses = self.addresses.read();
         for (i, acc) in account_ids.iter().enumerate() {
             if let Some(d) = addresses.get(&acc) {
-                v[i] = Some((d.0, d.1));
+                v.push((d.0, d.1));
             } else {
-                v[i] = None;
+                // if the account is not found, error out
+                return Box::new(err(()));
             }
         }
         Box::new(ok(v))
@@ -110,10 +113,22 @@ impl AccountStore for TestStore {
 
 impl TestStore {
     pub fn new(accs: Vec<TestAccount>, should_fail: bool) -> Self {
+        let mut addresses = HashMap::new();
+        for account in &accs {
+            let token_address = if !account.no_details {
+                Some(account.token_address)
+            } else {
+                None
+            };
+            let account_address = account.address;
+            addresses.insert(account.id, (account_address, token_address));
+        }
+        println!("INITIALIZING WITH: {:?}", addresses);
+
         TestStore {
             accounts: Arc::new(accs),
             should_fail,
-            addresses: Arc::new(RwLock::new(HashMap::new())),
+            addresses: Arc::new(RwLock::new(addresses)),
             // cache: Arc::new(RwLock::new(HashMap::new())),
             // cache_hits: Arc::new(RwLock::new(0)),
         }
@@ -123,9 +138,10 @@ impl TestStore {
 // Test Service
 
 impl TestAccount {
-    pub fn new(id: u64, token_address: &str) -> Self {
+    pub fn new(id: u64, address: &str, token_address: &str) -> Self {
         Self {
             id,
+            address: Address::from_str(address).unwrap(),
             token_address: Address::from_str(token_address).unwrap(),
             no_details: false,
         }
@@ -177,9 +193,32 @@ where
     (engine, ganache_pid)
 }
 
-pub fn test_store(store_fails: bool, account_has_engine: bool) -> TestStore {
-    let mut acc = TEST_ACCOUNT_0.clone();
-    acc.no_details = !account_has_engine;
+pub fn test_api<Si, S, A>(
+    store: S,
+    key: Si,
+    addr: &str,
+    confs: usize,
+) -> EthereumSettlementEngine<S, Si, A>
+where
+    Si: TxSigner + Clone + Send + Sync + 'static,
+    S: EthereumStore<Account = A> + Clone + Send + Sync + 'static,
+    A: EthereumAccount + Send + Sync + 'static,
+{
+    let chain_id = 1;
+    let poll_frequency = Duration::from_secs(1);
+    EthereumSettlementEngine::new(
+        "http://localhost:8545".to_string(),
+        store,
+        key,
+        Address::from_str(addr).unwrap(),
+        chain_id,
+        confs,
+        poll_frequency,
+    )
+}
 
+pub fn test_store(account: TestAccount, store_fails: bool, account_has_engine: bool) -> TestStore {
+    let mut acc = account.clone();
+    acc.no_details = !account_has_engine;
     TestStore::new(vec![acc], store_fails)
 }

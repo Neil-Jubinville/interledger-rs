@@ -11,6 +11,17 @@ use std::{marker::PhantomData, str::FromStr, time::Duration};
 use super::{make_tx, TxSigner};
 use super::{EthereumAccount, EthereumStore};
 
+#[derive(Debug, Clone, Extract)]
+struct CreateAccountDetails {
+    pub ethereum_address: Address,
+    pub token_address: Option<Address>,
+}
+
+#[derive(Debug, Clone, Extract)]
+struct ReceiveMessageDetails {
+    data: Vec<u8>,
+}
+
 #[derive(Debug, Clone)]
 pub struct EthereumSettlementEngine<S, Si, A> {
     store: S,
@@ -105,10 +116,13 @@ impl_web! {
         fn receive_message(
             &self,
             account_id: String,
-            body: Vec<u8>,
+            body: ReceiveMessageDetails,
             _idempotency_key: String,
         ) -> impl Future<Item = Response<String>, Error = Response<String>> {
-            unimplemented!()
+            ok(Response::builder()
+                .status(200)
+                .body("Success!".to_string())
+                .unwrap())
         }
 
         // TODO: it should take an account id, register it locally and then call
@@ -118,10 +132,44 @@ impl_web! {
         fn create_account(
             &self,
             account_id: String,
-            body: Vec<u8>,
-            _idempotency_key: String,
+            body: CreateAccountDetails,
+            _idempotency_key: Option<String>,
         ) -> impl Future<Item = Response<String>, Error = Response<String>> {
-            unimplemented!()
+            // TODO idempotency check
+            let store: S = self.store.clone();
+            let data = (body.ethereum_address, body.token_address);
+
+            result(A::AccountId::from_str(&account_id).map_err(move |_err| {
+                // let store = store.clone();
+                // let idempotency_key = idempotency_key.clone();
+                // move |_err| {
+                let error_msg = format!("Unable to parse account");
+                error!("{}", error_msg);
+                // let status_code = StatusCode::from_u16(400).unwrap();
+                // let data = Bytes::from(error_msg.clone());
+                // store.save_idempotent_data(idempotency_key, status_code, data);
+                Response::builder().status(400).body(error_msg).unwrap()
+            }))
+            .and_then({
+                move |account_id| {
+                    store.save_account_addresses(vec![account_id], vec![data])
+                        .map_err(move |_err| {
+                            let error_msg = format!("Error creating account: {}, {:?}", account_id, data);
+                            error!("{}", error_msg);
+                            // let status_code = StatusCode::from_u16(404).unwrap();
+                            // let data = Bytes::from(error_msg.clone());
+                            // store.save_idempotent_data(idempotency_key, status_code, data);
+                            Response::builder().status(400).body(error_msg).unwrap()
+                        })
+                }
+            })
+            .and_then(move |_| {
+                Ok(Response::builder()
+                    .status(201)
+                    .body("CREATED".to_string())
+                    .unwrap())
+            })
+
         }
 
         // TODO : it should get the data associated with accounts
@@ -132,7 +180,10 @@ impl_web! {
             body: Vec<u8>,
             _idempotency_key: String,
         ) -> impl Future<Item = Response<String>, Error = Response<String>> {
-            unimplemented!()
+            ok(Response::builder()
+                .status(200)
+                .body("Success!".to_string())
+                .unwrap())
         }
 
         #[post("/accounts/:account_id/settlement")]
@@ -140,7 +191,7 @@ impl_web! {
             &self,
             account_id: String,
             body: SettlementData,
-            _idempotency_key: String,
+            _idempotency_key: Option<String>,
         ) -> impl Future<Item = Response<String>, Error = Response<String>> {
             // TODO add idempotency check.
             let amount = U256::from(body.amount);
@@ -173,10 +224,7 @@ impl_web! {
             })
             .and_then({
                 move |addresses| {
-                    // tood handle None
-                let (to, token_addr) = addresses[0].unwrap();
-                // FIXME: Figure out why we get lifetime errors here.
-                // settle_to MUST outlive execute_settlement.
+                let (to, token_addr) = addresses[0];
                 self_clone.settle_to(to, amount, token_addr).map_err(|_| {
                     let error_msg = format!("Error connecting to the blockchain.");
                     error!("{}", error_msg);
@@ -187,7 +235,7 @@ impl_web! {
             .and_then(move |_| {
                 Ok(Response::builder()
                     .status(200)
-                    .body("Success!".to_string())
+                    .body("OK".to_string())
                     .unwrap())
             })
         }
@@ -197,24 +245,57 @@ impl_web! {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_helpers::{test_engine, test_store};
 
+    use crate::fixtures::BOB;
+    use crate::test_helpers::{test_api, test_engine, test_store, TestAccount};
     static ALICE_PK: &str = "380eb0f3d505f087e438eca80bc4df9a7faa24f868e69fc0440261a0fc0567dc";
     static ALICE_ADDR: &str = "3cdb3d9e1b74692bb1e3bb5fc81938151ca64b02";
-    static BOB_ADDR: &str = "2fcd07047c209c46a767f8338cb0b14955826826";
 
     #[test]
-    fn test_send_tx() {
-        let store = test_store(false, true);
+    // All tests involving ganache must be run in 1 suite so that they run serially
+    fn test_execute_settlement() {
+        let bob = BOB.clone();
+        let store = test_store(bob.clone(), false, true);
         let (engine, mut ganache_pid) = test_engine(store, ALICE_PK, ALICE_ADDR, 0);
         let amount = U256::from(100000);
 
-        let receipt = engine
-            .settle_to(BOB_ADDR.parse().unwrap(), amount, None)
+        let receipt = engine.settle_to(bob.address, amount, None).wait().unwrap();
+        assert_eq!(receipt.status, Some(1.into()));
+
+        let ret: Response<_> = engine
+            .execute_settlement(bob.id.to_string(), SettlementData { amount: 100 }, None)
             .wait()
             .unwrap();
-        assert_eq!(receipt.status, Some(1.into()));
+        assert_eq!(ret.status().as_u16(), 200);
+        assert_eq!(ret.body(), "OK");
+
         ganache_pid.kill().unwrap();
+    }
+
+    #[test]
+    fn test_create_account() {
+        let bob: TestAccount = BOB.clone();
+        let store = test_store(bob.clone(), false, true);
+        let engine = test_api(store, ALICE_PK, ALICE_ADDR, 0);
+        let amount = U256::from(100000);
+
+        // Bob's ILP details have already been inserted. This endpoint gets
+        // automatically called when creating the account.
+        let ret: Response<_> = engine
+            .create_account(
+                bob.id.to_string(),
+                CreateAccountDetails {
+                    ethereum_address: bob.address,
+                    token_address: None,
+                },
+                None,
+            )
+            .wait()
+            .unwrap();
+        assert_eq!(ret.status().as_u16(), 201);
+        assert_eq!(ret.body(), "CREATED");
+
+        // todo: idempotency checks
     }
 
 }

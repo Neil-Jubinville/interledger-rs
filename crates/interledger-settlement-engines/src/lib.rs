@@ -53,5 +53,5 @@ pub trait EthereumStore {
     fn load_account_addresses(
         &self,
         account_ids: Vec<<Self::Account as Account>::AccountId>,
-    ) -> Box<dyn Future<Item = Vec<Option<Addresses>>, Error = ()> + Send>;
+    ) -> Box<dyn Future<Item = Vec<Addresses>, Error = ()> + Send>;
 }

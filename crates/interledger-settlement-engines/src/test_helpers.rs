@@ -1,11 +1,11 @@
 use super::*;
+use bytes::Bytes;
 use futures::{
     future::{err, ok},
     Future,
 };
 use interledger_service::{Account, AccountStore};
-use interledger_settlement::{IdempotentStore, IdempotentData};
-use bytes::Bytes;
+use interledger_settlement::{IdempotentData, IdempotentStore};
 
 use parking_lot::RwLock;
 use std::collections::HashMap;
@@ -75,7 +75,7 @@ impl EthereumStore for TestStore {
     ) -> Box<dyn Future<Item = Vec<Addresses>, Error = ()> + Send> {
         let mut v = Vec::with_capacity(account_ids.len());
         let addresses = self.addresses.read();
-        for (i, acc) in account_ids.iter().enumerate() {
+        for acc in &account_ids {
             if let Some(d) = addresses.get(&acc) {
                 v.push((d.0, d.1));
             } else {
@@ -143,7 +143,14 @@ impl IdempotentStore for TestStore {
     ) -> Box<dyn Future<Item = (), Error = ()> + Send> {
         let mut cache = self.cache.write();
         if let Some(idempotency_key) = idempotency_key {
-            cache.insert(idempotency_key, (status_code, String::from_utf8_lossy(&data).to_string(), input_hash));
+            cache.insert(
+                idempotency_key,
+                (
+                    status_code,
+                    String::from_utf8_lossy(&data).to_string(),
+                    input_hash,
+                ),
+            );
         }
         Box::new(ok(()))
     }

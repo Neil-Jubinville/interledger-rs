@@ -70,7 +70,22 @@ mod tests {
         let nonce = 1.into();
         let token_address = Some("B8c77482e45F1F44dE1745F52C74426C631bDD52".into());
         let tx = make_tx(to, value, nonce, token_address);
+        assert_eq!(tx.to, token_address);
+        assert_eq!(tx.value, U256::from(0));
         assert_eq!(hex::encode(tx.data), "a9059cbb000000000000000000000000c92be489639a9c61f517bd3b955840fa19bc9b7c000000000000000000000000000000000000000000000000016345785d8a0000")
+    }
+
+    #[test]
+    fn test_eth_make_tx() {
+        let to = "c92be489639a9c61f517bd3b955840fa19bc9b7c".parse().unwrap();
+        let value = "16345785d8a0000".into();
+        let nonce = 1.into();
+        let token_address = None;
+        let tx = make_tx(to, value, nonce, token_address);
+        assert_eq!(tx.to, Some(to));
+        assert_eq!(tx.value, value);
+        let empty: Vec<u8> = Vec::new();
+        assert_eq!(tx.data, empty);
     }
 
 }

@@ -1,14 +1,14 @@
+use bytes::Bytes;
 use ethereum_tx_sign::web3::{
     api::Web3,
-    futures::future::{Either, ok, result, Future},
+    futures::future::{ok, result, Either, Future},
     transports::Http,
     types::{Address, TransactionReceipt, U256},
 };
 use hyper::{Response, StatusCode};
 use interledger_settlement::{IdempotentStore, SettlementData};
-use std::{marker::PhantomData, str::FromStr, time::Duration};
-use bytes::Bytes;
 use ring::digest::{digest, SHA256};
+use std::{marker::PhantomData, str::FromStr, time::Duration};
 
 use super::{make_tx, Addresses, TxSigner};
 use super::{EthereumAccount, EthereumStore};
@@ -398,7 +398,10 @@ mod tests {
             .wait()
             .unwrap_err();
         assert_eq!(ret.status().as_u16(), 409);
-        assert_eq!(ret.body(), "Provided idempotency key is tied to other input");
+        assert_eq!(
+            ret.body(),
+            "Provided idempotency key is tied to other input"
+        );
 
         // fails with same id and different data
         let ret: Response<_> = engine
@@ -410,7 +413,10 @@ mod tests {
             .wait()
             .unwrap_err();
         assert_eq!(ret.status().as_u16(), 409);
-        assert_eq!(ret.body(), "Provided idempotency key is tied to other input");
+        assert_eq!(
+            ret.body(),
+            "Provided idempotency key is tied to other input"
+        );
 
         // fails with different id and different data
         let ret: Response<_> = engine
@@ -422,7 +428,10 @@ mod tests {
             .wait()
             .unwrap_err();
         assert_eq!(ret.status().as_u16(), 409);
-        assert_eq!(ret.body(), "Provided idempotency key is tied to other input");
+        assert_eq!(
+            ret.body(),
+            "Provided idempotency key is tied to other input"
+        );
 
         let s = store.clone();
         let cache = s.cache.read();

@@ -17,8 +17,17 @@ struct CreateAccountDetails {
     pub token_address: Option<Address>,
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+enum MessageType {
+    Config = 0,
+    PaymentChannelOpen = 1,
+    PaymentChannelPay = 2,
+    PaymentChannelClose = 3,
+}
+
 #[derive(Debug, Clone, Extract)]
 struct ReceiveMessageDetails {
+    msg_type: MessageType,
     data: Vec<u8>,
 }
 
@@ -67,7 +76,6 @@ impl_web! {
         /// Submits a transaction to `to` the Ethereum blockchain for `amount`.
         /// If called with `token_address`, it makes an ERC20 transaction instead.
         fn settle_to(
-            // must live longer than execute
             &self,
             to: Address,
             amount: U256,
@@ -119,10 +127,32 @@ impl_web! {
             body: ReceiveMessageDetails,
             _idempotency_key: String,
         ) -> impl Future<Item = Response<String>, Error = Response<String>> {
-            ok(Response::builder()
-                .status(200)
-                .body("Success!".to_string())
-                .unwrap())
+            let _message_type = body.msg_type;
+            let _data = body.data;
+            self.load_account(account_id).map_err(|err| {
+                let error_msg = format!("Error loading account {:?}", err);
+                error!("{}", error_msg);
+                Response::builder().status(400).body(error_msg).unwrap()
+            })
+            .and_then(move |(_account_id, _addresses)| {
+                // TODO: What functionality should exist here?
+                // let (ethereum_address, token_address) = addresses;
+                // match message_type {
+                //     MessageType::Config => {
+                //         let data = match data.len() {
+                //             20 => (Address::from(&data[..]), None),
+                //             40 => (Address::from(&data[..20]), Some(Address::from(&data[20..]))),
+                //             _ => return Err(Response::builder().status(502).body("INVALID PAYLOAD LENGTH".to_string()).unwrap())
+                //         };
+                //         store.save_account_addresses(vec![account_id], vec![data]);
+                //     },
+                //     _ => unimplemented!()
+                // }
+                Ok(Response::builder()
+                    .status(200)
+                    .body("OK".to_string())
+                    .unwrap())
+            })
         }
 
         // TODO: it should take an account id, register it locally and then call
@@ -179,29 +209,18 @@ impl_web! {
             &self,
             account_id: String,
         ) -> impl Future<Item = Response<String>, Error = Response<String>> {
-            let store = self.store.clone();
-            result(A::AccountId::from_str(&account_id).map_err(move |_err| {
-                let error_msg = format!("Unable to parse account");
+            self.load_account(account_id).map_err(|err| {
+                let error_msg = format!("Error loading account {:?}", err);
                 error!("{}", error_msg);
                 Response::builder().status(400).body(error_msg).unwrap()
-            }))
-            .and_then({
-                move |account_id| {
-                    store
-                        .load_account_addresses(vec![account_id])
-                        .map_err(move |_err| {
-                            let error_msg = format!("Error getting account: {}", account_id);
-                            error!("{}", error_msg);
-                            Response::builder().status(400).body(error_msg).unwrap()
-                        })
-                }
             })
-            .and_then(move |addresses| {
-                let (ethereum_address, token_address) = addresses[0];
+            .and_then(move |(_account_id, addresses)| {
+                let (ethereum_address, token_address) = addresses;
                 let ret = json!({"ethereum_address" : ethereum_address, "token_address" : token_address}).to_string();
-                ok(Response::builder().status(200).body(ret).unwrap())
+                Ok(Response::builder().status(200).body(ret).unwrap())
             })
         }
+
 
         #[post("/accounts/:account_id/settlement")]
         fn execute_settlement(
@@ -213,6 +232,31 @@ impl_web! {
             // TODO add idempotency check.
             let amount = U256::from(body.amount);
             let self_clone = self.clone();
+            self.load_account(account_id).map_err(|err| {
+                let error_msg = format!("Error loading account {:?}", err);
+                error!("{}", error_msg);
+                Response::builder().status(400).body(error_msg).unwrap()
+            })
+            .and_then(move |(_account_id, addresses)| {
+                let (to, token_addr) = addresses;
+                self_clone.settle_to(to, amount, token_addr).map_err(|_| {
+                    let error_msg = format!("Error connecting to the blockchain.");
+                    error!("{}", error_msg);
+                    // maybe replace with a per-blockchain specific status code?
+                    Response::builder().status(502).body(error_msg).unwrap()
+                })
+            })
+            .and_then(move |_| {
+                Ok(Response::builder()
+                    .status(200)
+                    .body("OK".to_string())
+                    .unwrap())
+            })
+        }
+
+        /// helper function that returns the addresses associated with an
+        /// account from a given string account id
+        fn load_account(&self, account_id: String) -> impl Future <Item = (A::AccountId, Addresses), Error = String> {
             let store = self.store.clone();
             result(A::AccountId::from_str(&account_id).map_err(move |_err| {
                 // let store = store.clone();
@@ -222,11 +266,11 @@ impl_web! {
                 error!("{}", error_msg);
                 // let status_code = StatusCode::from_u16(400).unwrap();
                 // let data = Bytes::from(error_msg.clone());
-                // store.save_idempotent_data(idempotency_key, status_code, data);
-                Response::builder().status(400).body(error_msg).unwrap()
+                // store.save_idempotent_data(idempotency_key, status_code,
+                // data);
+                error_msg
             }))
-            .and_then({
-                move |account_id| {
+            .and_then(move |account_id| {
                     store
                         .load_account_addresses(vec![account_id])
                         .map_err(move |_err| {
@@ -235,26 +279,12 @@ impl_web! {
                             // let status_code = StatusCode::from_u16(404).unwrap();
                             // let data = Bytes::from(error_msg.clone());
                             // store.save_idempotent_data(idempotency_key, status_code, data);
-                            Response::builder().status(400).body(error_msg).unwrap()
+                            error_msg
                         })
-                }
-            })
-            .and_then({
-                move |addresses| {
-                let (to, token_addr) = addresses[0];
-                self_clone.settle_to(to, amount, token_addr).map_err(|_| {
-                    let error_msg = format!("Error connecting to the blockchain.");
-                    error!("{}", error_msg);
-                    // maybe replace with a per-blockchain specific status code?
-                    Response::builder().status(502).body(error_msg).unwrap()
+                        .and_then(move |addresses| {
+                            ok((account_id, addresses[0]))
+                        })
                 })
-            }})
-            .and_then(move |_| {
-                Ok(Response::builder()
-                    .status(200)
-                    .body("OK".to_string())
-                    .unwrap())
-            })
         }
     }
 }

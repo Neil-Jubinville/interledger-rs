@@ -6,6 +6,7 @@ use futures::{
 };
 use interledger_service::{Account, AccountStore};
 use interledger_settlement::{IdempotentData, IdempotentStore};
+use tokio::runtime::Runtime;
 
 use parking_lot::RwLock;
 use std::collections::HashMap;
@@ -51,6 +52,7 @@ pub struct TestStore {
     pub accounts: Arc<Vec<TestAccount>>,
     pub should_fail: bool,
     pub addresses: Arc<RwLock<HashMap<u64, Addresses>>>,
+    #[allow(clippy::all)]
     pub cache: Arc<RwLock<HashMap<String, (StatusCode, String, [u8; 32])>>>,
     pub cache_hits: Arc<RwLock<u64>>,
 }
@@ -262,4 +264,16 @@ pub fn test_store(
     let mut acc = account.clone();
     acc.no_details = !account_has_engine;
     TestStore::new(vec![acc], store_fails, initialize)
+}
+
+// Futures helper taken from the store_helpers in interledger-store-redis.
+pub fn block_on<F>(f: F) -> Result<F::Item, F::Error>
+where
+    F: Future + Send + 'static,
+    F::Item: Send,
+    F::Error: Send,
+{
+    // Only run one test at a time
+    let mut runtime = Runtime::new().unwrap();
+    runtime.block_on(f)
 }

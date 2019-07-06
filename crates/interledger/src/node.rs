@@ -1,4 +1,5 @@
 use bytes::Bytes;
+use ethereum_tx_sign::web3::types::Address as EthAddress;
 use futures::{future::result, Future};
 use hex::FromHex;
 use interledger_api::{NodeApi, NodeStore};
@@ -15,10 +16,12 @@ use interledger_service_util::{
     RateLimitService, ValidatorService,
 };
 use interledger_settlement::{SettlementApi, SettlementMessageService};
+use interledger_settlement_engines::{EthereumSettlementEngine, TxSigner};
 use interledger_store_redis::{Account, ConnectionInfo, IntoConnectionInfo, RedisStoreBuilder};
 use interledger_stream::StreamReceiverService;
 use ring::{digest, hmac};
 use serde::{de::Error as DeserializeError, Deserialize, Deserializer};
+use std::time::Duration;
 use std::{net::SocketAddr, str};
 use tokio::{self, net::TcpListener};
 use url::Url;
@@ -303,4 +306,47 @@ fn generate_redis_secret(secret_seed: &[u8; 32]) -> [u8; 32] {
     );
     redis_secret.copy_from_slice(sig.as_ref());
     redis_secret
+}
+
+#[doc(hidden)]
+pub fn run_settlement_engine<R, Si>(
+    redis_uri: R,
+    ethereum_endpoint: String,
+    settlement_port: u16,
+    secret_seed: &[u8; 32],
+    private_key: Si,
+    chain_id: u8,
+    confirmations: usize,
+    poll_frequency: Duration,
+) -> impl Future<Item = (), Error = ()>
+where
+    R: IntoConnectionInfo,
+    Si: TxSigner + Clone + Send + Sync + 'static,
+{
+    let redis_secret = generate_redis_secret(secret_seed);
+    let redis_uri = redis_uri.into_connection_info().unwrap();
+
+    RedisStoreBuilder::new(redis_uri, redis_secret)
+        .connect()
+        .and_then(move |store| {
+            // todo replace with derivation!
+            let address = EthAddress::from("3cdb3d9e1b74692bb1e3bb5fc81938151ca64b02");
+
+            let engine = EthereumSettlementEngine::new(
+                String::from(ethereum_endpoint),
+                store,
+                private_key,
+                address,
+                chain_id,
+                confirmations,
+                poll_frequency,
+            );
+
+            let addr = SocketAddr::from(([127, 0, 0, 1], settlement_port));
+            let listener =
+                TcpListener::bind(&addr).expect("Unable to bind to Settlement Engine address");
+            info!("Ethereum Settlement Engine listening on: {}", addr);
+            tokio::spawn(engine.serve_api(listener.incoming()));
+            Ok(())
+        })
 }

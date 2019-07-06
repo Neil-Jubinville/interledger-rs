@@ -10,12 +10,12 @@ use std::str::FromStr;
 /// the SE.
 pub trait TxSigner {
     /// Takes a transaction and returns an RLP encoded signed version of it
-    fn sign(&self, tx: RawTransaction, chain_id: &u8) -> Vec<u8>;
+    fn sign(&self, tx: RawTransaction, chain_id: u8) -> Vec<u8>;
 }
 
-impl TxSigner for &str {
-    fn sign(&self, tx: RawTransaction, chain_id: &u8) -> Vec<u8> {
-        tx.sign(&H256::from_str(self).unwrap(), chain_id)
+impl TxSigner for String {
+    fn sign(&self, tx: RawTransaction, chain_id: u8) -> Vec<u8> {
+        tx.sign(&H256::from_str(self).unwrap(), &chain_id)
     }
 }
 
@@ -34,10 +34,7 @@ pub fn make_tx(
     if let Some(token_address) = token_address {
         // erc20 function selector
         let mut data = hex::decode("a9059cbb").unwrap();
-        data.extend(ethabi::encode(&vec![
-            Token::Address(to),
-            Token::Uint(value),
-        ]));
+        data.extend(ethabi::encode(&[Token::Address(to), Token::Uint(value)]));
         RawTransaction {
             to: Some(token_address),
             nonce,

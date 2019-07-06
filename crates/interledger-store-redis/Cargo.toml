@@ -38,6 +38,7 @@ tokio-executor = "0.1.6"
 tokio-timer = "0.2.10"
 url = "1.7.2"
 http = "0.1.17"
+base64 = "0.10.1"
 
 
 [dev-dependencies]

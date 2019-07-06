@@ -9,6 +9,8 @@ use hyper::{Response, StatusCode};
 use interledger_settlement::{IdempotentStore, SettlementData};
 use ring::digest::{digest, SHA256};
 use std::{marker::PhantomData, str::FromStr, time::Duration};
+use tokio_executor::spawn;
+use tower_web::{net::ConnectionStream, ServiceBuilder};
 
 use super::{make_tx, Addresses, TxSigner};
 use super::{EthereumAccount, EthereumStore};
@@ -54,6 +56,7 @@ impl_web! {
         Si: TxSigner + Clone + Send + Sync + 'static,
         A: EthereumAccount + Send + Sync + 'static,
     {
+
         pub fn new(
             endpoint: String,
             store: S,
@@ -77,7 +80,7 @@ impl_web! {
 
         /// Submits a transaction to `to` the Ethereum blockchain for `amount`.
         /// If called with `token_address`, it makes an ERC20 transaction instead.
-        fn settle_to(
+        pub fn settle_to(
             &self,
             to: Address,
             amount: U256,
@@ -110,9 +113,9 @@ impl_web! {
             //         // 5. return the receipt
             //         .and_then(|receipt| Ok(receipt))
             //     })
-            let nonce = web3.eth().transaction_count(self.address.clone(), None).wait().unwrap();
-            let tx = make_tx(to, U256::from(amount), nonce, token_address);
-            let signed_tx = self.signer.sign(tx, &1);
+            let nonce = web3.eth().transaction_count(self.address, None).wait().unwrap();
+            let tx = make_tx(to, amount, nonce, token_address);
+            let signed_tx = self.signer.sign(tx, self.chain_id);
             let receipt = web3.send_raw_transaction_with_confirmation(signed_tx.into(), self.poll_frequency, self.confirmations).wait().unwrap();
             ok(receipt)
         }
@@ -157,7 +160,7 @@ impl_web! {
             })
         }
 
-        #[post("/accounts")]
+        #[post("/accounts/:account_id")]
         fn create_account(
             &self,
             account_id: String,
@@ -185,11 +188,11 @@ impl_web! {
                         let store = store.clone();
                         let idempotency_key = idempotency_key.clone();
                         move |_err| {
-                        let error_msg = format!("Unable to parse account");
+                        let error_msg = "Unable to parse account".to_string();
                         error!("{}", error_msg);
                         let status_code = StatusCode::from_u16(400).unwrap();
                         let data = Bytes::from(error_msg.clone());
-                        store.save_idempotent_data(idempotency_key, input_hash, status_code, data);
+                        spawn(store.save_idempotent_data(idempotency_key, input_hash, status_code, data));
                         Response::builder().status(status_code).body(error_msg).unwrap()
                     }}))
                     .and_then({
@@ -200,13 +203,13 @@ impl_web! {
                                     error!("{}", error_msg);
                                     let status_code = StatusCode::from_u16(400).unwrap();
                                     let data = Bytes::from(error_msg.clone());
-                                    store_clone.save_idempotent_data(idempotency_key, input_hash, status_code, data);
+                                    spawn(store_clone.save_idempotent_data(idempotency_key, input_hash, status_code, data));
                                     Response::builder().status(400).body(error_msg).unwrap()
                                 })
                         }
                     })
                     .and_then(move |_| {
-                        store_clone2.save_idempotent_data(idempotency_key_clone, input_hash, StatusCode::from_u16(201).unwrap(), Bytes::from("CREATED"));
+                        spawn(store_clone2.save_idempotent_data(idempotency_key_clone, input_hash, StatusCode::from_u16(201).unwrap(), Bytes::from("CREATED")));
                         Ok(Response::builder()
                             .status(201)
                             .body("CREATED".to_string())
@@ -219,7 +222,7 @@ impl_web! {
         }
 
         // TODO : it should get the data associated with accounts
-        #[get("/accounts/:id")]
+        #[get("/accounts/:account_id")]
         #[content_type("application/json")]
         fn get_account(
             &self,
@@ -266,21 +269,21 @@ impl_web! {
                     self_clone.load_account(account_id).map_err(move |err| {
                         let error_msg = format!("Error loading account {:?}", err);
                         error!("{}", error_msg);
-                        store.save_idempotent_data(idempotency_key, input_hash, StatusCode::from_u16(400).unwrap(), Bytes::from(error_msg.clone()));
+                        spawn(store.save_idempotent_data(idempotency_key, input_hash, StatusCode::from_u16(400).unwrap(), Bytes::from(error_msg.clone())));
                         Response::builder().status(400).body(error_msg).unwrap()
                     })
                     .and_then(move |(_account_id, addresses)| {
                         let (to, token_addr) = addresses;
                         self_clone.settle_to(to, amount, token_addr).map_err(move |_| {
-                            let error_msg = format!("Error connecting to the blockchain.");
+                            let error_msg = "Error connecting to the blockchain.".to_string();
                             error!("{}", error_msg);
                             // maybe replace with a per-blockchain specific status code?
-                            store_clone.save_idempotent_data(idempotency_key_clone, input_hash, StatusCode::from_u16(502).unwrap(), Bytes::from(error_msg.clone()));
+                            spawn(store_clone.save_idempotent_data(idempotency_key_clone, input_hash, StatusCode::from_u16(502).unwrap(), Bytes::from(error_msg.clone())));
                             Response::builder().status(502).body(error_msg).unwrap()
                         })
                     })
                     .and_then(move |_| {
-                        store_clone2.save_idempotent_data(idempotency_key_clone2, input_hash, StatusCode::from_u16(200).unwrap(), Bytes::from("OK".to_string()));
+                        spawn(store_clone2.save_idempotent_data(idempotency_key_clone2, input_hash, StatusCode::from_u16(200).unwrap(), Bytes::from("OK".to_string())));
                         Ok(Response::builder()
                             .status(200)
                             .body("OK".to_string())
@@ -294,15 +297,8 @@ impl_web! {
         fn load_account(&self, account_id: String) -> impl Future <Item = (A::AccountId, Addresses), Error = String> {
             let store = self.store.clone();
             result(A::AccountId::from_str(&account_id).map_err(move |_err| {
-                // let store = store.clone();
-                // let idempotency_key = idempotency_key.clone();
-                // move |_err| {
-                let error_msg = format!("Unable to parse account");
+                let error_msg = "Unable to parse account".to_string();
                 error!("{}", error_msg);
-                // let status_code = StatusCode::from_u16(400).unwrap();
-                // let data = Bytes::from(error_msg.clone());
-                // store.save_idempotent_data(idempotency_key, status_code,
-                // data);
                 error_msg
             }))
             .and_then(move |account_id| {
@@ -311,9 +307,6 @@ impl_web! {
                         .map_err(move |_err| {
                             let error_msg = format!("Error getting account: {}", account_id);
                             error!("{}", error_msg);
-                            // let status_code = StatusCode::from_u16(404).unwrap();
-                            // let data = Bytes::from(error_msg.clone());
-                            // store.save_idempotent_data(idempotency_key, status_code, data);
                             error_msg
                         })
                         .and_then(move |addresses| {
@@ -334,8 +327,6 @@ impl_web! {
                 (StatusCode::from_u16(500).unwrap(), err)
             }).and_then(move |ret: Option<(StatusCode, Bytes, [u8; 32])>| {
                     if let Some(d) = ret {
-                        println!("GOT RET: {:?}", d.2);
-                        println!("GOT INPUT HASH {:?}", input_hash);
                         if d.2 != input_hash {
                             // Stripe CONFLICT status code
                             return Err((StatusCode::from_u16(409).unwrap(), "Provided idempotency key is tied to other input".to_string()))
@@ -351,6 +342,18 @@ impl_web! {
             )
         }
 
+        // todo: extract this to method in SettlementEngine trait!!!
+        pub fn serve<I>(self, incoming: I) -> impl Future<Item = (), Error = ()>
+        where
+            I: ConnectionStream,
+            I::Item: Send + 'static,
+        {
+            ServiceBuilder::new()
+                .resource(self)
+                .serve(incoming)
+        }
+
+
     }
 }
 
@@ -365,53 +368,51 @@ mod tests {
     use super::*;
 
     use crate::fixtures::BOB;
-    use crate::test_helpers::{test_api, test_engine, test_store, TestAccount};
-    static ALICE_PK: &str = "380eb0f3d505f087e438eca80bc4df9a7faa24f868e69fc0440261a0fc0567dc";
+    use crate::test_helpers::{block_on, test_api, test_engine, test_store, TestAccount};
     static ALICE_ADDR: &str = "3cdb3d9e1b74692bb1e3bb5fc81938151ca64b02";
     static IDEMPOTENCY: &str = "AJKJNUjM0oyiAN46";
+
+    lazy_static! {
+        static ref ALICE_PK: String =
+            String::from("380eb0f3d505f087e438eca80bc4df9a7faa24f868e69fc0440261a0fc0567dc");
+    }
 
     #[test]
     // All tests involving ganache must be run in 1 suite so that they run serially
     fn test_execute_settlement() {
         let bob = BOB.clone();
         let store = test_store(bob.clone(), false, true, true);
-        let (engine, mut ganache_pid) = test_engine(store.clone(), ALICE_PK, ALICE_ADDR, 0);
+        let (engine, mut ganache_pid) = test_engine(store.clone(), ALICE_PK.clone(), ALICE_ADDR, 0);
         let amount = U256::from(100_000);
 
         let receipt = engine.settle_to(bob.address, amount, None).wait().unwrap();
         assert_eq!(receipt.status, Some(1.into()));
 
-        let ret: Response<_> = engine
-            .execute_settlement(
-                bob.id.to_string(),
-                SettlementData { amount: 100 },
-                Some(IDEMPOTENCY.to_string()),
-            )
-            .wait()
-            .unwrap();
+        let ret: Response<_> = block_on(engine.execute_settlement(
+            bob.id.to_string(),
+            SettlementData { amount: 100 },
+            Some(IDEMPOTENCY.to_string()),
+        ))
+        .unwrap();
         assert_eq!(ret.status().as_u16(), 200);
         assert_eq!(ret.body(), "OK");
 
-        let ret: Response<_> = engine
-            .execute_settlement(
-                bob.id.to_string(),
-                SettlementData { amount: 100 },
-                Some(IDEMPOTENCY.to_string()),
-            )
-            .wait()
-            .unwrap();
+        let ret: Response<_> = block_on(engine.execute_settlement(
+            bob.id.to_string(),
+            SettlementData { amount: 100 },
+            Some(IDEMPOTENCY.to_string()),
+        ))
+        .unwrap();
         assert_eq!(ret.status().as_u16(), 200);
         assert_eq!(ret.body(), "OK");
 
         // fails with different id and same data
-        let ret: Response<_> = engine
-            .execute_settlement(
-                "42".to_string(),
-                SettlementData { amount: 100 },
-                Some(IDEMPOTENCY.to_string()),
-            )
-            .wait()
-            .unwrap_err();
+        let ret: Response<_> = block_on(engine.execute_settlement(
+            "42".to_string(),
+            SettlementData { amount: 100 },
+            Some(IDEMPOTENCY.to_string()),
+        ))
+        .unwrap_err();
         assert_eq!(ret.status().as_u16(), 409);
         assert_eq!(
             ret.body(),
@@ -419,14 +420,12 @@ mod tests {
         );
 
         // fails with same id and different data
-        let ret: Response<_> = engine
-            .execute_settlement(
-                bob.id.to_string(),
-                SettlementData { amount: 42 },
-                Some(IDEMPOTENCY.to_string()),
-            )
-            .wait()
-            .unwrap_err();
+        let ret: Response<_> = block_on(engine.execute_settlement(
+            bob.id.to_string(),
+            SettlementData { amount: 42 },
+            Some(IDEMPOTENCY.to_string()),
+        ))
+        .unwrap_err();
         assert_eq!(ret.status().as_u16(), 409);
         assert_eq!(
             ret.body(),
@@ -434,14 +433,12 @@ mod tests {
         );
 
         // fails with different id and different data
-        let ret: Response<_> = engine
-            .execute_settlement(
-                "42".to_string(),
-                SettlementData { amount: 42 },
-                Some(IDEMPOTENCY.to_string()),
-            )
-            .wait()
-            .unwrap_err();
+        let ret: Response<_> = block_on(engine.execute_settlement(
+            "42".to_string(),
+            SettlementData { amount: 42 },
+            Some(IDEMPOTENCY.to_string()),
+        ))
+        .unwrap_err();
         assert_eq!(ret.status().as_u16(), 409);
         assert_eq!(
             ret.body(),
@@ -464,21 +461,19 @@ mod tests {
     fn test_create_get_account() {
         let bob: TestAccount = BOB.clone();
         let store = test_store(bob.clone(), false, false, false);
-        let engine = test_api(store.clone(), ALICE_PK, ALICE_ADDR, 0);
+        let engine = test_api(store.clone(), ALICE_PK.clone(), ALICE_ADDR, 0);
 
         // Bob's ILP details have already been inserted. This endpoint gets
         // automatically called when creating the account.
-        let ret: Response<_> = engine
-            .create_account(
-                bob.id.to_string(),
-                CreateAccountDetails {
-                    ethereum_address: bob.address,
-                    token_address: None,
-                },
-                Some(IDEMPOTENCY.to_string()),
-            )
-            .wait()
-            .unwrap();
+        let ret: Response<_> = block_on(engine.create_account(
+            bob.id.to_string(),
+            CreateAccountDetails {
+                ethereum_address: bob.address,
+                token_address: None,
+            },
+            Some(IDEMPOTENCY.to_string()),
+        ))
+        .unwrap();
         assert_eq!(ret.status().as_u16(), 201);
         assert_eq!(ret.body(), "CREATED");
 
@@ -488,33 +483,29 @@ mod tests {
         assert_eq!(ret.body(), &data);
 
         // check that it's idempotent
-        let ret: Response<_> = engine
-            .create_account(
-                bob.id.to_string(),
-                CreateAccountDetails {
-                    ethereum_address: bob.address,
-                    token_address: None,
-                },
-                Some(IDEMPOTENCY.to_string()),
-            )
-            .wait()
-            .unwrap();
+        let ret: Response<_> = block_on(engine.create_account(
+            bob.id.to_string(),
+            CreateAccountDetails {
+                ethereum_address: bob.address,
+                token_address: None,
+            },
+            Some(IDEMPOTENCY.to_string()),
+        ))
+        .unwrap();
         assert_eq!(ret.status().as_u16(), 201);
         assert_eq!(ret.body(), "CREATED");
 
         // fails with different id and same data
         println!("trying different id");
-        let ret: Response<_> = engine
-            .create_account(
-                "42".to_string(),
-                CreateAccountDetails {
-                    ethereum_address: bob.address,
-                    token_address: None,
-                },
-                Some(IDEMPOTENCY.to_string()),
-            )
-            .wait()
-            .unwrap_err();
+        let ret: Response<_> = block_on(engine.create_account(
+            "42".to_string(),
+            CreateAccountDetails {
+                ethereum_address: bob.address,
+                token_address: None,
+            },
+            Some(IDEMPOTENCY.to_string()),
+        ))
+        .unwrap_err();
         assert_eq!(ret.status().as_u16(), 409);
         assert_eq!(
             ret.body(),
@@ -522,18 +513,15 @@ mod tests {
         );
 
         // fails with same id and different data
-        println!("trying different data");
-        let ret: Response<_> = engine
-            .create_account(
-                bob.id.to_string(),
-                CreateAccountDetails {
-                    ethereum_address: ALICE_ADDR.parse().unwrap(),
-                    token_address: None,
-                },
-                Some(IDEMPOTENCY.to_string()),
-            )
-            .wait()
-            .unwrap_err();
+        let ret: Response<_> = block_on(engine.create_account(
+            bob.id.to_string(),
+            CreateAccountDetails {
+                ethereum_address: ALICE_ADDR.parse().unwrap(),
+                token_address: None,
+            },
+            Some(IDEMPOTENCY.to_string()),
+        ))
+        .unwrap_err();
         assert_eq!(ret.status().as_u16(), 409);
         assert_eq!(
             ret.body(),
@@ -542,17 +530,15 @@ mod tests {
 
         // fails with different id and different data
         println!("trying both different");
-        let ret: Response<_> = engine
-            .create_account(
-                "42".to_string(),
-                CreateAccountDetails {
-                    ethereum_address: ALICE_ADDR.parse().unwrap(),
-                    token_address: None,
-                },
-                Some(IDEMPOTENCY.to_string()),
-            )
-            .wait()
-            .unwrap_err();
+        let ret: Response<_> = block_on(engine.create_account(
+            "42".to_string(),
+            CreateAccountDetails {
+                ethereum_address: ALICE_ADDR.parse().unwrap(),
+                token_address: None,
+            },
+            Some(IDEMPOTENCY.to_string()),
+        ))
+        .unwrap_err();
         assert_eq!(ret.status().as_u16(), 409);
         assert_eq!(
             ret.body(),

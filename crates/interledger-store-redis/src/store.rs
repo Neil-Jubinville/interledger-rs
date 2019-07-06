@@ -1,5 +1,6 @@
 use super::account::*;
 use super::crypto::generate_keys;
+use base64;
 use bytes::Bytes;
 use futures::{
     future::{err, ok, result, Either},
@@ -1215,6 +1216,7 @@ impl EthereumStore for RedisStore {
         account_ids: Vec<<Self::Account as AccountTrait>::AccountId>,
         data: Vec<Addresses>,
     ) -> Box<dyn Future<Item = (), Error = ()> + Send> {
+        error!("SAVING ACCOUNT DATA {:?} {:?}", account_ids, data);
         let mut pipe = redis::pipe();
         for (account_id, d) in account_ids.iter().zip(&data) {
             let token_address = if let Some(token_address) = d.1 {

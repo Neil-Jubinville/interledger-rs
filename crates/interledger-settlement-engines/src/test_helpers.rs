@@ -34,11 +34,14 @@ impl Account for TestAccount {
 }
 
 impl EthereumAccount for TestAccount {
-    fn token_adddress(&self) -> Option<Address> {
+    fn token_address(&self) -> Option<Address> {
         if self.no_details {
             return None;
         }
         Some(self.token_address)
+    }
+    fn ethereum_address(&self) -> Address {
+        self.address
     }
 }
 

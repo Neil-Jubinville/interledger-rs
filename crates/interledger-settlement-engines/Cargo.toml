@@ -1,5 +1,5 @@
 [package]
-name = "ethereum-settlement-engine"
+name = "interledger-settlement-engines"
 version = "0.1.0"
 authors = ["Georgios Konstantopoulos <me@gakonst.com>"]
 edition = "2018"
@@ -7,7 +7,7 @@ edition = "2018"
 [dependencies]
 tower-web = "0.3.7"
 hex = "0.3.2"
-ethereum-tx-sign = { path = "../../../ethereum-tx-sign" }
+ethereum-tx-sign = { git = "https://github.com/gakonst/ethereum-tx-sign" }
 log = "0.4.6"
 tokio = "0.1.21"
 hyper = "0.12.31"
@@ -25,4 +25,4 @@ ring = "0.14.6"
 
 [dev-dependencies]
 lazy_static = "1.3"
-parking_lot = "0.8.1"
+parking_lot = "0.8.0"

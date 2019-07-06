@@ -31,7 +31,9 @@ pub use self::eth_engine::EthereumSettlementEngine;
 pub use self::helpers::{make_tx, TxSigner};
 
 pub trait EthereumAccount: Account {
-    fn token_adddress(&self) -> Option<Address> {
+    fn ethereum_address(&self) -> Address;
+
+    fn token_address(&self) -> Option<Address> {
         None
     }
 }

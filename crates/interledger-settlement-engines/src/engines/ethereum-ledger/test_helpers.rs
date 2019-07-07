@@ -210,12 +210,13 @@ where
     A: EthereumAccount + Send + Sync + 'static,
 {
     let mut ganache = Command::new("ganache-cli");
-    let ganache = ganache.stdout(std::process::Stdio::null()).arg("-m").arg(
-        "abstract vacuum mammal awkward pudding scene penalty purchase dinner depart evoke puzzle",
-    );
+    let ganache = ganache
+        // .stdout(std::process::Stdio::null())
+        .arg("-m")
+        .arg("abstract vacuum mammal awkward pudding scene penalty purchase dinner depart evoke puzzle");
     let ganache_pid = ganache.spawn().expect("couldnt start ganache-cli");
     // wait a couple of seconds for ganache to boot up
-    sleep(Duration::from_secs(3));
+    sleep(Duration::from_secs(7));
     let chain_id = 1;
     let poll_frequency = Duration::from_secs(1);
     let engine = EthereumSettlementEngine::new(
@@ -226,11 +227,13 @@ where
         chain_id,
         confs,
         poll_frequency,
+        "http://localhost:7071".parse().unwrap(),
     );
 
     (engine, ganache_pid)
 }
 
+use url::Url;
 pub fn test_api<Si, S, A>(
     store: S,
     key: Si,
@@ -252,6 +255,7 @@ where
         chain_id,
         confs,
         poll_frequency,
+        Url::parse("http://127.0.0.1:7071").unwrap(),
     )
 }
 
@@ -274,6 +278,7 @@ where
     F::Error: Send,
 {
     // Only run one test at a time
+    let _ = env_logger::try_init();
     let mut runtime = Runtime::new().unwrap();
     runtime.block_on(f)
 }

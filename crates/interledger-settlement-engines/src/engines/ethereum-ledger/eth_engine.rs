@@ -1,19 +1,20 @@
+use super::{make_tx, Addresses, TxSigner};
+use super::{EthereumAccount, EthereumStore};
 use bytes::Bytes;
 use ethereum_tx_sign::web3::{
     api::Web3,
     futures::future::{ok, result, Either, Future},
     transports::Http,
-    types::{Address, TransactionReceipt, U256},
+    types::{Address, U256},
 };
 use hyper::{Response, StatusCode};
 use interledger_settlement::{IdempotentStore, SettlementData};
+use reqwest::r#async::Client;
 use ring::digest::{digest, SHA256};
 use std::{marker::PhantomData, str::FromStr, time::Duration};
 use tokio_executor::spawn;
 use tower_web::{net::ConnectionStream, ServiceBuilder};
-
-use super::{make_tx, Addresses, TxSigner};
-use super::{EthereumAccount, EthereumStore};
+use url::Url;
 
 #[derive(Debug, Clone, Extract)]
 struct CreateAccountDetails {
@@ -47,6 +48,7 @@ pub struct EthereumSettlementEngine<S, Si, A> {
     pub chain_id: u8,
     pub confirmations: usize,
     pub poll_frequency: Duration,
+    pub connector_url: Url,
 }
 
 impl_web! {
@@ -65,6 +67,7 @@ impl_web! {
             chain_id: u8,
             confirmations: usize,
             poll_frequency: Duration,
+            connector_url: Url,
         ) -> Self {
             EthereumSettlementEngine {
                 endpoint,
@@ -74,6 +77,7 @@ impl_web! {
                 chain_id,
                 confirmations,
                 poll_frequency,
+                connector_url,
                 account_type: PhantomData,
             }
         }
@@ -83,41 +87,70 @@ impl_web! {
         pub fn settle_to(
             &self,
             to: Address,
+            to_account_id: String,
             amount: U256,
             token_address: Option<Address>,
-        ) -> impl Future<Item = TransactionReceipt, Error = ()> {
+        ) -> impl Future<Item = (), Error = ()> {
             // FIXME: We initialize inside the function and not outside due to
             // invalid pipe errors (for some reason...)
             let (_eloop, transport) = Http::new(&self.endpoint).unwrap();
             let web3 = Web3::new(transport);
+            let mut url = self.connector_url.clone();
+            let poll_frequency = self.poll_frequency;
+            let confirmations = self.confirmations;
 
             // FIXME: For some reason, when running asynchronously, all calls time out.
             // 1. get the nonce
             // let self_clone = self.clone();
             // web3.eth()
-            //     .transaction_count(self.address.clone(), None)
-            //     .map_err(move |err| error!("Couldn't fetch nonce. Got error: {:#?}", err))
-            //     .and_then(move |nonce| {
-            //         // 2. create the transaction
-            //         let tx = make_tx(to, U256::from(amount), nonce, token_address);
-            //         // 3. sign the transaction
-            //         let signed_tx = self_clone.signer.sign(tx, &1);
-            //         // 4. send the transaction
-
+            // .transaction_count(self.address.clone(), None)
+            // .map_err(move |err| error!("Couldn't fetch nonce. Got error: {:#?}", err))
+            // .and_then(move |nonce| {
+            //     // 2. create the transaction
+            //     let tx = make_tx(to, amount, nonce, token_address);
+            //     // 3. sign the transaction
+            //     let signed_tx = self_clone.signer.sign(tx, 1);
+            //     // 4. send the transaction and notify the connector
+            //     spawn(
             //         web3.send_raw_transaction_with_confirmation(
-            //             signed_tx.into(),
-            //             self_clone.poll_frequency,
-            //             self_clone.confirmations,
+            //             signed_tx.into(), poll_frequency, confirmations,
             //         )
             //         .map_err(move |err| error!("Could not submit raw transaction. Error: {:#?}", err))
-            //         // 5. return the receipt
-            //         .and_then(|receipt| Ok(receipt))
-            //     })
-            let nonce = web3.eth().transaction_count(self.address, None).wait().unwrap();
-            let tx = make_tx(to, amount, nonce, token_address);
-            let signed_tx = self.signer.sign(tx, self.chain_id);
-            let receipt = web3.send_raw_transaction_with_confirmation(signed_tx.into(), self.poll_frequency, self.confirmations).wait().unwrap();
-            ok(receipt)
+            //         .and_then(move |tx_receipt| {
+            //             let tx_receipt_clone = tx_receipt.clone();
+            //             let client = Client::new();
+            //             url
+            //                 .path_segments_mut()
+            //                 .expect("Invalid connector URL")
+            //                 .push("accounts")
+            //                     .push(&to_account_id)
+            //                     .push("settlement");
+
+            //                 client.post(url)
+            //                     .header("Content-Type", "application/octet-stream")
+            //                     .header("Idempotency-Key", "asdf")
+            //                     .body(amount.to_string())
+            //                     .send()
+            //                     .map_err(move |err| error!("Error notifying accounting system about transaction {:?}: {:?}", tx_receipt_clone, err))
+            //                     .and_then(move |response| {
+            //                         if response.status().is_success() {
+            //                             trace!("Successfully notified accounting system about the settlement of: {:?}", tx_receipt);
+            //                             Ok(())
+            //                         } else {
+            //                             error!("Error notifying accounting system about transaction {:?}. It responded with HTTP code: {}", tx_receipt, response.status());
+            //                             Err(())
+            //                         }
+            //                     })
+            //             })
+            //         );
+
+            //         Ok(())
+            // })
+            // let nonce = web3.eth().transaction_count(self.address, None).wait().unwrap();
+            // let tx = make_tx(to, U256::from(amount), nonce, token_address);
+            // let signed_tx = self.signer.sign(tx, 1);
+            // let _receipt = web3.send_raw_transaction_with_confirmation(signed_tx.into(), self.poll_frequency, self.confirmations).wait().unwrap();
+            // ok(())
         }
 
         // TODO: Receive message is going to be utilized for L2 protocols and
@@ -255,6 +288,7 @@ impl_web! {
             let store_clone2 = store.clone();
             let idempotency_key_clone = idempotency_key.clone();
             let idempotency_key_clone2 = idempotency_key.clone();
+            let account_id_clone = account_id.clone();
 
             let input = format!("{}{:?}", account_id, body);
             let input_hash = get_hash_of(input.as_ref());
@@ -274,7 +308,7 @@ impl_web! {
                     })
                     .and_then(move |(_account_id, addresses)| {
                         let (to, token_addr) = addresses;
-                        self_clone.settle_to(to, amount, token_addr).map_err(move |_| {
+                        self_clone.settle_to(to, account_id_clone, amount, token_addr).map_err(move |_| {
                             let error_msg = "Error connecting to the blockchain.".to_string();
                             error!("{}", error_msg);
                             // maybe replace with a per-blockchain specific status code?
@@ -352,8 +386,6 @@ impl_web! {
                 .resource(self)
                 .serve(incoming)
         }
-
-
     }
 }
 
@@ -373,7 +405,7 @@ mod tests {
     static IDEMPOTENCY: &str = "AJKJNUjM0oyiAN46";
 
     lazy_static! {
-        static ref ALICE_PK: String =
+        pub static ref ALICE_PK: String =
             String::from("380eb0f3d505f087e438eca80bc4df9a7faa24f868e69fc0440261a0fc0567dc");
     }
 
@@ -383,10 +415,6 @@ mod tests {
         let bob = BOB.clone();
         let store = test_store(bob.clone(), false, true, true);
         let (engine, mut ganache_pid) = test_engine(store.clone(), ALICE_PK.clone(), ALICE_ADDR, 0);
-        let amount = U256::from(100_000);
-
-        let receipt = engine.settle_to(bob.address, amount, None).wait().unwrap();
-        assert_eq!(receipt.status, Some(1.into()));
 
         let ret: Response<_> = block_on(engine.execute_settlement(
             bob.id.to_string(),
@@ -496,7 +524,6 @@ mod tests {
         assert_eq!(ret.body(), "CREATED");
 
         // fails with different id and same data
-        println!("trying different id");
         let ret: Response<_> = block_on(engine.create_account(
             "42".to_string(),
             CreateAccountDetails {
@@ -529,7 +556,6 @@ mod tests {
         );
 
         // fails with different id and different data
-        println!("trying both different");
         let ret: Response<_> = block_on(engine.create_account(
             "42".to_string(),
             CreateAccountDetails {

@@ -1,5 +1,6 @@
-use super::{make_tx, Addresses, TxSigner};
-use super::{EthereumAccount, EthereumStore};
+use super::types::{Addresses, EthereumAccount, EthereumLedgerTxSigner, EthereumStore};
+use super::utils::make_tx;
+
 use bytes::Bytes;
 use ethereum_tx_sign::web3::{
     api::Web3,
@@ -9,7 +10,7 @@ use ethereum_tx_sign::web3::{
 };
 use hyper::{Response, StatusCode};
 use interledger_settlement::{IdempotentStore, SettlementData};
-use reqwest::r#async::Client;
+// use reqwest::r#async::Client; // used in buggy code
 use ring::digest::{digest, SHA256};
 use std::{marker::PhantomData, str::FromStr, time::Duration};
 use tokio_executor::spawn;
@@ -37,7 +38,7 @@ struct ReceiveMessageDetails {
 }
 
 #[derive(Debug, Clone)]
-pub struct EthereumSettlementEngine<S, Si, A> {
+pub struct EthereumLedgerSettlementEngine<S, Si, A> {
     store: S,
     signer: Si,
     account_type: PhantomData<A>,
@@ -52,10 +53,10 @@ pub struct EthereumSettlementEngine<S, Si, A> {
 }
 
 impl_web! {
-    impl<S, Si, A> EthereumSettlementEngine<S, Si, A>
+    impl<S, Si, A> EthereumLedgerSettlementEngine<S, Si, A>
     where
         S: EthereumStore<Account = A> + IdempotentStore + Clone + Send + Sync + 'static,
-        Si: TxSigner + Clone + Send + Sync + 'static,
+        Si: EthereumLedgerTxSigner + Clone + Send + Sync + 'static,
         A: EthereumAccount + Send + Sync + 'static,
     {
 
@@ -69,7 +70,7 @@ impl_web! {
             poll_frequency: Duration,
             connector_url: Url,
         ) -> Self {
-            EthereumSettlementEngine {
+            EthereumLedgerSettlementEngine {
                 endpoint,
                 store,
                 signer,
@@ -146,11 +147,11 @@ impl_web! {
 
             //         Ok(())
             // })
-            // let nonce = web3.eth().transaction_count(self.address, None).wait().unwrap();
-            // let tx = make_tx(to, U256::from(amount), nonce, token_address);
-            // let signed_tx = self.signer.sign(tx, 1);
-            // let _receipt = web3.send_raw_transaction_with_confirmation(signed_tx.into(), self.poll_frequency, self.confirmations).wait().unwrap();
-            // ok(())
+            let nonce = web3.eth().transaction_count(self.address, None).wait().unwrap();
+            let tx = make_tx(to, U256::from(amount), nonce, token_address);
+            let signed_tx = self.signer.sign(tx, 1);
+            let _receipt = web3.send_raw_transaction_with_confirmation(signed_tx.into(), self.poll_frequency, self.confirmations).wait().unwrap();
+            ok(())
         }
 
         // TODO: Receive message is going to be utilized for L2 protocols and
@@ -399,8 +400,8 @@ fn get_hash_of(preimage: &[u8]) -> [u8; 32] {
 mod tests {
     use super::*;
 
-    use crate::fixtures::BOB;
-    use crate::test_helpers::{block_on, test_api, test_engine, test_store, TestAccount};
+    use super::super::fixtures::BOB;
+    use super::super::test_helpers::{block_on, test_api, test_engine, test_store, TestAccount};
     static ALICE_ADDR: &str = "3cdb3d9e1b74692bb1e3bb5fc81938151ca64b02";
     static IDEMPOTENCY: &str = "AJKJNUjM0oyiAN46";
 

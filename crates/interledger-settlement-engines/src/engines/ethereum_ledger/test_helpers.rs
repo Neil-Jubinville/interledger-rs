@@ -1,9 +1,4 @@
-use super::*;
 use bytes::Bytes;
-use futures::{
-    future::{err, ok},
-    Future,
-};
 use interledger_service::{Account, AccountStore};
 use interledger_settlement::{IdempotentData, IdempotentStore};
 use tokio::runtime::Runtime;
@@ -17,6 +12,14 @@ use std::process::Command;
 use std::str::FromStr;
 use std::thread::sleep;
 use std::time::Duration;
+
+use ethereum_tx_sign::web3::{
+    futures::future::{err, ok, Future},
+    types::Address,
+};
+
+use super::eth_engine::EthereumLedgerSettlementEngine;
+use super::types::{Addresses, EthereumAccount, EthereumLedgerTxSigner, EthereumStore};
 
 #[derive(Debug, Clone)]
 pub struct TestAccount {
@@ -203,23 +206,25 @@ pub fn test_engine<Si, S, A>(
     key: Si,
     addr: &str,
     confs: usize,
-) -> (EthereumSettlementEngine<S, Si, A>, std::process::Child)
+) -> (
+    EthereumLedgerSettlementEngine<S, Si, A>,
+    std::process::Child,
+)
 where
-    Si: TxSigner + Clone + Send + Sync + 'static,
+    Si: EthereumLedgerTxSigner + Clone + Send + Sync + 'static,
     S: EthereumStore<Account = A> + IdempotentStore + Clone + Send + Sync + 'static,
     A: EthereumAccount + Send + Sync + 'static,
 {
     let mut ganache = Command::new("ganache-cli");
-    let ganache = ganache
-        // .stdout(std::process::Stdio::null())
-        .arg("-m")
-        .arg("abstract vacuum mammal awkward pudding scene penalty purchase dinner depart evoke puzzle");
+    let ganache = ganache.stdout(std::process::Stdio::null()).arg("-m").arg(
+        "abstract vacuum mammal awkward pudding scene penalty purchase dinner depart evoke puzzle",
+    );
     let ganache_pid = ganache.spawn().expect("couldnt start ganache-cli");
     // wait a couple of seconds for ganache to boot up
-    sleep(Duration::from_secs(7));
+    sleep(Duration::from_secs(4));
     let chain_id = 1;
     let poll_frequency = Duration::from_secs(1);
-    let engine = EthereumSettlementEngine::new(
+    let engine = EthereumLedgerSettlementEngine::new(
         "http://localhost:8545".to_string(),
         store,
         key,
@@ -239,15 +244,15 @@ pub fn test_api<Si, S, A>(
     key: Si,
     addr: &str,
     confs: usize,
-) -> EthereumSettlementEngine<S, Si, A>
+) -> EthereumLedgerSettlementEngine<S, Si, A>
 where
-    Si: TxSigner + Clone + Send + Sync + 'static,
+    Si: EthereumLedgerTxSigner + Clone + Send + Sync + 'static,
     S: EthereumStore<Account = A> + IdempotentStore + Clone + Send + Sync + 'static,
     A: EthereumAccount + Send + Sync + 'static,
 {
     let chain_id = 1;
     let poll_frequency = Duration::from_secs(1);
-    EthereumSettlementEngine::new(
+    EthereumLedgerSettlementEngine::new(
         "http://localhost:8545".to_string(),
         store,
         key,

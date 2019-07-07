@@ -1,23 +1,9 @@
 use ethabi::Token;
 use ethereum_tx_sign::{
-    web3::types::{Address, H256, U256},
+    web3::types::{Address, U256},
     RawTransaction,
 };
 use std::ops::Mul;
-use std::str::FromStr;
-
-/// Trait whcih can be implemented for other types such as HSMs to be used with
-/// the SE.
-pub trait TxSigner {
-    /// Takes a transaction and returns an RLP encoded signed version of it
-    fn sign(&self, tx: RawTransaction, chain_id: u8) -> Vec<u8>;
-}
-
-impl TxSigner for String {
-    fn sign(&self, tx: RawTransaction, chain_id: u8) -> Vec<u8> {
-        tx.sign(&H256::from_str(self).unwrap(), &chain_id)
-    }
-}
 
 #[allow(unused)]
 pub fn to_wei(src: U256) -> U256 {

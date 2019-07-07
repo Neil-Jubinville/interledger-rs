@@ -126,6 +126,10 @@ pub fn main() {
                                 .long("ethereum_endpoint")
                                 .help("Ethereum node endpoint")
                                 .default_value("http://127.0.0.1:8545"),
+                            Arg::with_name("connector_url")
+                                .long("connector_url")
+                                .help("Connector Settlement API endpoint")
+                                .default_value("http://127.0.0.1:7071"),
                             Arg::with_name("redis_uri")
                                 .long("redis_uri")
                                 .help("Redis database to add the account to")
@@ -323,6 +327,7 @@ pub fn main() {
                 let private_key: String = value_t!(matches, "key", String).unwrap();
                 let ethereum_endpoint: String =
                     value_t!(matches, "ethereum_endpoint", String).unwrap();
+                let connector_url: String = value_t!(matches, "connector_url", String).unwrap();
                 let redis_uri =
                     value_t!(matches, "redis_uri", String).expect("redis_uri is required");
                 let redis_uri = Url::parse(&redis_uri).expect("redis_uri is not a valid URI");
@@ -348,6 +353,7 @@ pub fn main() {
                     chain_id,
                     confirmations,
                     poll_frequency,
+                    Url::parse(&connector_url).unwrap(),
                 ));
             }
             _ => app.print_help().unwrap(),

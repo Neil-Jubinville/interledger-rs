@@ -20,7 +20,7 @@ use interledger_service_util::{BalanceStore, ExchangeRateStore, RateLimitError, 
 use interledger_settlement::{
     IdempotentData, IdempotentStore, SettlementAccount, SettlementClient, SettlementStore,
 };
-use interledger_settlement_engines::{Addresses, EthereumStore};
+use interledger_settlement_engines::{EthereumAddresses, EthereumStore};
 use parking_lot::RwLock;
 use redis::{
     self, cmd, r#async::SharedConnection, Client, ConnectionInfo, PipelineCommands, Value,
@@ -1167,7 +1167,7 @@ impl EthereumStore for RedisStore {
     fn load_account_addresses(
         &self,
         account_ids: Vec<<Self::Account as AccountTrait>::AccountId>,
-    ) -> Box<dyn Future<Item = Vec<Addresses>, Error = ()> + Send> {
+    ) -> Box<dyn Future<Item = Vec<EthereumAddresses>, Error = ()> + Send> {
         let mut pipe = redis::pipe();
         for account_id in account_ids.iter() {
             pipe.hgetall(ethereum_ledger_key(*account_id));
@@ -1214,7 +1214,7 @@ impl EthereumStore for RedisStore {
     fn save_account_addresses(
         &self,
         account_ids: Vec<<Self::Account as AccountTrait>::AccountId>,
-        data: Vec<Addresses>,
+        data: Vec<EthereumAddresses>,
     ) -> Box<dyn Future<Item = (), Error = ()> + Send> {
         error!("SAVING ACCOUNT DATA {:?} {:?}", account_ids, data);
         let mut pipe = redis::pipe();

@@ -6,7 +6,6 @@ extern crate log;
 #[cfg(test)]
 extern crate lazy_static;
 
-#[macro_use]
 #[cfg(test)]
 extern crate env_logger;
 
@@ -20,4 +19,7 @@ extern crate ethabi;
 
 // Export all the engines
 mod engines;
-pub use self::engines::ethereum_ledger::{EthereumLedgerSettlementEngine, EthereumLedgerTxSigner};
+pub use self::engines::ethereum_ledger::{
+    EthereumAccount, EthereumAddresses, EthereumLedgerSettlementEngine, EthereumLedgerTxSigner,
+    EthereumStore,
+};

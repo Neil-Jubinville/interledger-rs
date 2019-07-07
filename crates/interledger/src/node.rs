@@ -16,7 +16,7 @@ use interledger_service_util::{
     RateLimitService, ValidatorService,
 };
 use interledger_settlement::{SettlementApi, SettlementMessageService};
-use interledger_settlement_engines::{EthereumSettlementEngine, TxSigner};
+use interledger_settlement_engines::{EthereumLedgerSettlementEngine, EthereumLedgerTxSigner};
 use interledger_store_redis::{Account, ConnectionInfo, IntoConnectionInfo, RedisStoreBuilder};
 use interledger_stream::StreamReceiverService;
 use ring::{digest, hmac};
@@ -318,10 +318,11 @@ pub fn run_settlement_engine<R, Si>(
     chain_id: u8,
     confirmations: usize,
     poll_frequency: Duration,
+    connector_url: Url,
 ) -> impl Future<Item = (), Error = ()>
 where
     R: IntoConnectionInfo,
-    Si: TxSigner + Clone + Send + Sync + 'static,
+    Si: EthereumLedgerTxSigner + Clone + Send + Sync + 'static,
 {
     let redis_secret = generate_redis_secret(secret_seed);
     let redis_uri = redis_uri.into_connection_info().unwrap();
@@ -332,7 +333,7 @@ where
             // todo replace with derivation!
             let address = EthAddress::from("3cdb3d9e1b74692bb1e3bb5fc81938151ca64b02");
 
-            let engine = EthereumSettlementEngine::new(
+            let engine = EthereumLedgerSettlementEngine::new(
                 String::from(ethereum_endpoint),
                 store,
                 private_key,
@@ -340,13 +341,14 @@ where
                 chain_id,
                 confirmations,
                 poll_frequency,
+                connector_url,
             );
 
             let addr = SocketAddr::from(([127, 0, 0, 1], settlement_port));
             let listener =
                 TcpListener::bind(&addr).expect("Unable to bind to Settlement Engine address");
             info!("Ethereum Settlement Engine listening on: {}", addr);
-            tokio::spawn(engine.serve_api(listener.incoming()));
+            tokio::spawn(engine.serve(listener.incoming()));
             Ok(())
         })
 }

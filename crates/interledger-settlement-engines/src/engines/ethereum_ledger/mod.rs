@@ -9,4 +9,6 @@ mod test_helpers;
 
 // Only expose the engine and the ledger signer
 pub use eth_engine::EthereumLedgerSettlementEngine;
-pub use types::EthereumLedgerTxSigner;
+pub use types::{
+    Addresses as EthereumAddresses, EthereumAccount, EthereumLedgerTxSigner, EthereumStore,
+};

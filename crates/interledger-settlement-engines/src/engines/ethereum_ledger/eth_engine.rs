@@ -63,12 +63,12 @@ where
         endpoint: String,
         store: S,
         signer: Si,
-        address: Address,
         chain_id: u8,
         confirmations: usize,
         poll_frequency: Duration,
         connector_url: Url,
     ) -> Self {
+        let address = signer.address();
         EthereumLedgerSettlementEngine {
             endpoint,
             store,

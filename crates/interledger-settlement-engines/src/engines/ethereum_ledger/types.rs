@@ -5,6 +5,7 @@ use ethereum_tx_sign::{
 use futures::Future;
 use interledger_service::Account;
 use std::str::FromStr;
+use ethkey::KeyPair;
 
 pub trait EthereumAccount: Account {
     fn ethereum_address(&self) -> Address;
@@ -42,10 +43,20 @@ pub trait EthereumStore {
 pub trait EthereumLedgerTxSigner {
     /// Takes a transaction and returns an RLP encoded signed version of it
     fn sign(&self, tx: RawTransaction, chain_id: u8) -> Vec<u8>;
+
+    fn address(&self) -> Address;
 }
 
 impl EthereumLedgerTxSigner for String {
     fn sign(&self, tx: RawTransaction, chain_id: u8) -> Vec<u8> {
         tx.sign(&H256::from_str(self).unwrap(), &chain_id)
+    }
+
+    fn address(&self) -> Address {
+        let keypair = KeyPair::from_secret_slice(self.as_ref()).unwrap();
+        // Convert to string and back to Address due to using different versions
+        // of `ethereum_types` and `primitive_types`.
+        let addr = ethkey::public_to_address(&keypair.public()).to_string();
+        Address::from_str(&addr).unwrap()
     }
 }

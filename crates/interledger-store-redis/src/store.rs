@@ -1154,38 +1154,47 @@ impl SettlementStore for RedisStore {
         &self,
         idempotency_key: Option<String>,
     ) -> Box<dyn Future<Item = Option<IdempotentData>, Error = ()> + Send> {
-        let idempotency_key = idempotency_key.unwrap();
-        let idempotency_key_clone = idempotency_key.clone();
-        Box::new(
-            cmd("HGETALL")
-                .arg(idempotency_key.clone())
-                .query_async(self.connection.as_ref().clone())
-                .map_err(move |err| {
-                    error!(
-                        "Error loading idempotency key {}: {:?}",
-                        idempotency_key_clone, err
-                    )
-                })
-                .and_then(
-                    move |(_connection, ret): (_, SlowHashMap<String, String>)| {
-                        let data = if let (Some(status_code), Some(data), Some(input_hash_slice)) =
-                            (ret.get("status_code"), ret.get("data"), ret.get("input_hash"))
-                        {
-                            trace!("Loaded idempotency key {:?} - {:?}", idempotency_key, ret);
-                            let mut input_hash: [u8; 32] = Default::default();
-                            input_hash.copy_from_slice(input_hash_slice.as_ref());
-                            Some((
-                                StatusCode::from_str(status_code).unwrap(),
-                                Bytes::from(data.clone()),
-                                input_hash,
-                            ))
-                        } else {
-                            None
-                        };
-                        Ok(data)
-                    },
-                ),
-        )
+        if let Some(idempotency_key) = idempotency_key {
+            let idempotency_key_clone = idempotency_key.clone();
+            Box::new(
+                cmd("HGETALL")
+                    .arg(idempotency_key.clone())
+                    .query_async(self.connection.as_ref().clone())
+                    .map_err(move |err| {
+                        error!(
+                            "Error loading idempotency key {}: {:?}",
+                            idempotency_key_clone, err
+                        )
+                    })
+                    .and_then(
+                        move |(_connection, ret): (_, SlowHashMap<String, String>)| {
+                            let data = if let (
+                                Some(status_code),
+                                Some(data),
+                                Some(input_hash_slice),
+                            ) = (
+                                ret.get("status_code"),
+                                ret.get("data"),
+                                ret.get("input_hash"),
+                            ) {
+                                trace!("Loaded idempotency key {:?} - {:?}", idempotency_key, ret);
+                                let mut input_hash: [u8; 32] = Default::default();
+                                input_hash.copy_from_slice(input_hash_slice.as_ref());
+                                Some((
+                                    StatusCode::from_str(status_code).unwrap(),
+                                    Bytes::from(data.clone()),
+                                    input_hash,
+                                ))
+                            } else {
+                                None
+                            };
+                            Ok(data)
+                        },
+                    ),
+            )
+        } else {
+            Box::new(ok(None))
+        }
     }
 
     fn save_idempotent_data(
@@ -1195,33 +1204,36 @@ impl SettlementStore for RedisStore {
         status_code: StatusCode,
         data: Bytes,
     ) -> Box<dyn Future<Item = (), Error = ()> + Send> {
-        let idempotency_key = idempotency_key.unwrap();
-        let mut pipe = redis::pipe();
-        pipe.atomic()
-            .cmd("HMSET") // cannot use hset_multiple since data and status_code have different types
-            .arg(&idempotency_key)
-            .arg("status_code")
-            .arg(status_code.as_u16())
-            .arg("data")
-            .arg(data.as_ref())
-            .arg("input_hash")
-            .arg(&input_hash)
-            .ignore()
-            .expire(&idempotency_key, 86400)
-            .ignore();
-        Box::new(
-            pipe.query_async(self.connection.as_ref().clone())
-                .map_err(|err| error!("Error caching: {:?}", err))
-                .and_then(move |(_connection, _): (_, Vec<String>)| {
-                    trace!(
-                        "Cached {:?}: {:?}, {:?}",
-                        idempotency_key,
-                        status_code,
-                        data,
-                    );
-                    Ok(())
-                }),
-        )
+        if let Some(idempotency_key) = idempotency_key {
+            let mut pipe = redis::pipe();
+            pipe.atomic()
+                .cmd("HMSET") // cannot use hset_multiple since data and status_code have different types
+                .arg(&idempotency_key)
+                .arg("status_code")
+                .arg(status_code.as_u16())
+                .arg("data")
+                .arg(data.as_ref())
+                .arg("input_hash")
+                .arg(&input_hash)
+                .ignore()
+                .expire(&idempotency_key, 86400)
+                .ignore();
+            Box::new(
+                pipe.query_async(self.connection.as_ref().clone())
+                    .map_err(|err| error!("Error caching: {:?}", err))
+                    .and_then(move |(_connection, _): (_, Vec<String>)| {
+                        trace!(
+                            "Cached {:?}: {:?}, {:?}",
+                            idempotency_key,
+                            status_code,
+                            data,
+                        );
+                        Ok(())
+                    }),
+            )
+        } else {
+            Box::new(ok(()))
+        }
     }
 
     fn update_balance_for_incoming_settlement(

@@ -204,7 +204,6 @@ impl TestAccount {
 pub fn test_engine<Si, S, A>(
     store: S,
     key: Si,
-    addr: &str,
     confs: usize,
 ) -> (
     EthereumLedgerSettlementEngine<S, Si, A>,
@@ -241,7 +240,6 @@ use url::Url;
 pub fn test_api<Si, S, A>(
     store: S,
     key: Si,
-    addr: &str,
     confs: usize,
 ) -> EthereumLedgerSettlementEngine<S, Si, A>
 where

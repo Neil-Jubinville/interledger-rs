@@ -1,8 +1,8 @@
+use crate::SettlementEngine;
 use futures::Future;
 use hyper::Response;
-use tower_web::{net::ConnectionStream, ServiceBuilder};
-use crate::SettlementEngine;
 use interledger_settlement::SettlementData;
+use tower_web::{net::ConnectionStream, ServiceBuilder};
 
 pub struct SettlementEngineApi<E> {
     engine: E,

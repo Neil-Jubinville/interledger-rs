@@ -151,7 +151,7 @@ where
             .transaction_count(self.address, None)
             .wait()
             .unwrap();
-        let tx = make_tx(to, U256::from(amount), nonce, token_address);
+        let tx = make_tx(to, amount, nonce, token_address);
         let signed_tx = self.signer.sign(tx, 1);
         let _receipt = web3
             .send_raw_transaction_with_confirmation(
@@ -469,9 +469,9 @@ fn get_hash_of(preimage: &[u8]) -> [u8; 32] {
 #[cfg(test)]
 mod tests {
     use super::*;
-
     use super::super::fixtures::BOB;
     use super::super::test_helpers::{block_on, test_api, test_engine, test_store, TestAccount};
+
     static ALICE_ADDR: &str = "3cdb3d9e1b74692bb1e3bb5fc81938151ca64b02";
     static IDEMPOTENCY: &str = "AJKJNUjM0oyiAN46";
 
@@ -485,7 +485,7 @@ mod tests {
     fn test_send_money() {
         let bob = BOB.clone();
         let store = test_store(bob.clone(), false, true, true);
-        let (engine, mut ganache_pid) = test_engine(store.clone(), ALICE_PK.clone(), ALICE_ADDR, 0);
+        let (engine, mut ganache_pid) = test_engine(store.clone(), ALICE_PK.clone(), 0);
 
         let ret: Response<_> = block_on(engine.send_money(
             bob.id.to_string(),
@@ -560,7 +560,7 @@ mod tests {
     fn test_create_get_account() {
         let bob: TestAccount = BOB.clone();
         let store = test_store(bob.clone(), false, false, false);
-        let engine = test_api(store.clone(), ALICE_PK.clone(), ALICE_ADDR, 0);
+        let engine = test_api(store.clone(), ALICE_PK.clone(), 0);
 
         // Bob's ILP details have already been inserted. This endpoint gets
         // automatically called when creating the account.

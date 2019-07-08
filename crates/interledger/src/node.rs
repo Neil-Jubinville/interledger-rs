@@ -1,5 +1,4 @@
 use bytes::Bytes;
-use ethereum_tx_sign::web3::types::Address as EthAddress;
 use futures::{future::result, Future};
 use hex::FromHex;
 use interledger_api::{NodeApi, NodeStore};
@@ -16,7 +15,9 @@ use interledger_service_util::{
     RateLimitService, ValidatorService,
 };
 use interledger_settlement::{SettlementApi, SettlementMessageService};
-use interledger_settlement_engines::{SettlementEngineApi, EthereumLedgerSettlementEngine, EthereumLedgerTxSigner};
+use interledger_settlement_engines::{
+    EthereumLedgerSettlementEngine, EthereumLedgerTxSigner, SettlementEngineApi,
+};
 use interledger_store_redis::{Account, ConnectionInfo, IntoConnectionInfo, RedisStoreBuilder};
 use interledger_stream::StreamReceiverService;
 use ring::{digest, hmac};
@@ -309,6 +310,7 @@ fn generate_redis_secret(secret_seed: &[u8; 32]) -> [u8; 32] {
 }
 
 #[doc(hidden)]
+#[allow(clippy::all)]
 pub fn run_settlement_engine<R, Si>(
     redis_uri: R,
     ethereum_endpoint: String,
@@ -331,7 +333,7 @@ where
         .connect()
         .and_then(move |store| {
             let engine = EthereumLedgerSettlementEngine::new(
-                String::from(ethereum_endpoint),
+                ethereum_endpoint,
                 store,
                 private_key,
                 chain_id,

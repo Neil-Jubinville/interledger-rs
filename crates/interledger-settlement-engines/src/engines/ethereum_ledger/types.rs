@@ -2,10 +2,11 @@ use ethereum_tx_sign::{
     web3::types::{Address, H256},
     RawTransaction,
 };
+use ethkey::KeyPair;
 use futures::Future;
 use interledger_service::Account;
 use std::str::FromStr;
-use ethkey::KeyPair;
+use parity_crypto::Keccak256;
 
 pub trait EthereumAccount: Account {
     fn ethereum_address(&self) -> Address;
@@ -53,10 +54,21 @@ impl EthereumLedgerTxSigner for String {
     }
 
     fn address(&self) -> Address {
-        let keypair = KeyPair::from_secret_slice(self.as_ref()).unwrap();
-        // Convert to string and back to Address due to using different versions
-        // of `ethereum_types` and `primitive_types`.
-        let addr = ethkey::public_to_address(&keypair.public()).to_string();
-        Address::from_str(&addr).unwrap()
+        let keypair = KeyPair::from_secret(self.parse().unwrap()).unwrap();
+        let public = keypair.public();
+        let hash = public.keccak256();
+        Address::from(&hash[12..])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_address() {
+        let privkey = String::from("acb8f4184aaf6490b6e6aea7b474225be0d965eed75f4b91183eff6032c299f8");
+        let addr = privkey.address();
+        assert_eq!(addr, Address::from("4070abbd2e38a8d27cd5a495f482c13f049f8310"));
     }
 }

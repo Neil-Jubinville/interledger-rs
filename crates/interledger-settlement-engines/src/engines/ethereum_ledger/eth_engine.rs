@@ -468,9 +468,9 @@ fn get_hash_of(preimage: &[u8]) -> [u8; 32] {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::fixtures::BOB;
     use super::super::test_helpers::{block_on, test_api, test_engine, test_store, TestAccount};
+    use super::*;
 
     static ALICE_ADDR: &str = "3cdb3d9e1b74692bb1e3bb5fc81938151ca64b02";
     static IDEMPOTENCY: &str = "AJKJNUjM0oyiAN46";

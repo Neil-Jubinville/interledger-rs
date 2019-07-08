@@ -5,8 +5,8 @@ use ethereum_tx_sign::{
 use ethkey::KeyPair;
 use futures::Future;
 use interledger_service::Account;
-use std::str::FromStr;
 use parity_crypto::Keccak256;
+use std::str::FromStr;
 
 pub trait EthereumAccount: Account {
     fn ethereum_address(&self) -> Address;
@@ -67,8 +67,12 @@ mod tests {
 
     #[test]
     fn test_address() {
-        let privkey = String::from("acb8f4184aaf6490b6e6aea7b474225be0d965eed75f4b91183eff6032c299f8");
+        let privkey =
+            String::from("acb8f4184aaf6490b6e6aea7b474225be0d965eed75f4b91183eff6032c299f8");
         let addr = privkey.address();
-        assert_eq!(addr, Address::from("4070abbd2e38a8d27cd5a495f482c13f049f8310"));
+        assert_eq!(
+            addr,
+            Address::from("4070abbd2e38a8d27cd5a495f482c13f049f8310")
+        );
     }
 }

@@ -129,7 +129,7 @@ pub fn main() {
                             Arg::with_name("connector_url")
                                 .long("connector_url")
                                 .help("Connector Settlement API endpoint")
-                                .default_value("http://127.0.0.1:7071"),
+                                .default_value("http://127.0.0.1:7771"),
                             Arg::with_name("redis_uri")
                                 .long("redis_uri")
                                 .help("Redis database to add the account to")

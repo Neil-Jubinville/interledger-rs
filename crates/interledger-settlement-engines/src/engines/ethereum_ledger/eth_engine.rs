@@ -20,12 +20,6 @@ use uuid::Uuid;
 
 use crate::SettlementEngine;
 
-#[derive(Debug, Clone, Extract)]
-struct CreateAccountDetails {
-    pub ethereum_address: Address,
-    pub token_address: Option<Address>,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 enum MessageType {
     PaymentDetailsMessage = 0,
@@ -232,11 +226,6 @@ where
     Si: EthereumLedgerTxSigner + Clone + Send + Sync + 'static,
     A: EthereumAccount + Send + Sync + 'static,
 {
-    // TODO: Receive message is going to be utilized for L2 protocols and
-    // for configuring the engine. We can make the body class as:
-    // type : data related to that. depending on type it should have
-    // different encoding, via some enum. for now we cna im plement a config
-    // message, then we can add a paychann message.
     fn receive_message(
         &self,
         account_id: String,
@@ -324,7 +313,8 @@ where
                     }
                     Either::B(
                         result(serde_json::from_slice(&body).map_err(move |_err| {
-                            let error_msg = "Unable to parse message body".to_string();
+                            let error_msg =
+                                "Unable to parse message body when creating account".to_owned();
                             error!("{}", error_msg);
                             Response::builder().status(400).body(error_msg).unwrap()
                         }))
@@ -590,10 +580,13 @@ mod tests {
         ))
         .unwrap_err();
         assert_eq!(ret.status().as_u16(), 400);
-        assert_eq!(ret.body(), "Unable to parse message body");
+        assert_eq!(
+            ret.body(),
+            "Unable to parse message body when creating account"
+        );
 
         let create_account_details = json!({
-            "own_address": bob.address,
+            "own_address": bob.address.to_owned(),
             "token_address": null,
         })
         .to_string();

@@ -4,7 +4,7 @@ use super::utils::make_tx;
 use bytes::Bytes;
 use ethereum_tx_sign::web3::{
     api::Web3,
-    futures::future::{err, ok, result, Either, Future},
+    futures::future::{ok, result, Either, Future},
     transports::Http,
     types::{Address, U256},
 };
@@ -26,18 +26,22 @@ struct CreateAccountDetails {
     pub token_address: Option<Address>,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 enum MessageType {
-    Config = 0,
-    PaymentChannelOpen = 1,
-    PaymentChannelPay = 2,
-    PaymentChannelClose = 3,
+    PaymentDetailsMessage = 0,
+    OtherMessage = 1, // To be done.
 }
 
-#[derive(Debug, Clone, Extract)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct ReceiveMessageDetails {
     msg_type: MessageType,
     data: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PaymentDetailsResponse {
+    to: Address,
+    tag: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -236,36 +240,58 @@ where
     fn receive_message(
         &self,
         account_id: String,
-        _body: Vec<u8>,
-        _idempotency_key: Option<String>,
+        body: Vec<u8>,
+        idempotency_key: Option<String>,
     ) -> Box<dyn Future<Item = Response<String>, Error = Response<String>> + Send> {
-        // let _message_type = body.msg_type; // todo: maybe add some parsing logic
-        // let _data = body.data;
+        let self_clone = self.clone();
+        let input = format!("{}{:?}", account_id, body);
+        let input_hash = get_hash_of(input.as_ref());
+
         Box::new(
-            self.load_account(account_id)
-                .map_err(|err| {
-                    let error_msg = format!("Error loading account {:?}", err);
-                    error!("{}", error_msg);
-                    Response::builder().status(400).body(error_msg).unwrap()
-                })
-                .and_then(move |(_account_id, _addresses)| {
-                    // TODO: What functionality should exist here?
-                    // let (ethereum_address, token_address) = addresses;
-                    // match message_type {
-                    //     MessageType::Config => {
-                    //         let data = match data.len() {
-                    //             20 => (Address::from(&data[..]), None),
-                    //             40 => (Address::from(&data[..20]), Some(Address::from(&data[20..]))),
-                    //             _ => return Err(Response::builder().status(502).body("INVALID PAYLOAD LENGTH".to_string()).unwrap())
-                    //         };
-                    //         store.save_account_addresses(vec![account_id], vec![data]);
-                    //     },
-                    //     _ => unimplemented!()
-                    // }
-                    Ok(Response::builder()
-                        .status(200)
-                        .body("OK".to_string())
-                        .unwrap())
+            self_clone
+                .check_idempotency(idempotency_key.clone(), input_hash)
+                .map_err(|res| Response::builder().status(res.0).body(res.1).unwrap())
+                .and_then(move |ret: Option<(StatusCode, Bytes)>| {
+                    if let Some(d) = ret {
+                        return Either::A(ok(Response::builder()
+                            .status(d.0)
+                            .body(String::from_utf8_lossy(&d.1).to_string())
+                            .unwrap()));
+                    }
+                    Either::B(
+                        result(serde_json::from_slice(&body))
+                            .map_err(move |err| {
+                                let error_msg = format!("Could not parse message body: {:?}", err);
+                                error!("{}", error_msg);
+                                Response::builder().status(400).body(error_msg).unwrap()
+                            })
+                            .and_then(move |message: ReceiveMessageDetails| {
+                                self_clone
+                                    .load_account(account_id)
+                                    .map_err(move |err| {
+                                        let error_msg = format!("Error loading account {:?}", err);
+                                        error!("{}", error_msg);
+                                        Response::builder().status(400).body(error_msg).unwrap()
+                                    })
+                                    .and_then(move |(_account_id, _addresses)| {
+                                        // TODO: Perform some store action
+                                        // similar to:
+                                        // https://github.com/matdehaast/ilp-settlement-xrp/commit/b3d26fac46aceabb307972dc737a084f78254532#diff-7915c1b96957c8fad130f9069c5ef850R32
+                                        let resp = match message.msg_type {
+                                            MessageType::PaymentDetailsMessage => {
+                                                let ret = PaymentDetailsResponse {
+                                                    to: self_clone.address,
+                                                    tag: 0, // How do we calculate the tag?
+                                                };
+                                                serde_json::to_string(&ret).unwrap()
+                                            }
+                                            _ => "Not implemented".to_string(),
+                                        };
+                                        // the received message.
+                                        Ok(Response::builder().status(200).body(resp).unwrap())
+                                    })
+                            }),
+                    )
                 }),
         )
     }
@@ -647,5 +673,62 @@ mod tests {
         assert_eq!(*cache_hits, 4);
         assert_eq!(cached_data.0, 201);
         assert_eq!(cached_data.1, "CREATED".to_string());
+    }
+
+    #[test]
+    fn test_receive_message() {
+        let bob: TestAccount = BOB.clone();
+        let store = test_store(bob.clone(), false, false, false);
+        let engine = test_api(store.clone(), ALICE_PK.clone(), 0);
+
+        // create an account first
+        let create_account_details = json!({
+            "own_address": bob.address,
+            "token_address": null,
+        })
+        .to_string();
+
+        let ret: Response<_> = block_on(engine.create_account(
+            bob.id.to_string(),
+            create_account_details.clone().into(),
+            None,
+        ))
+        .unwrap();
+        assert_eq!(ret.status().as_u16(), 201);
+        assert_eq!(ret.body(), "CREATED");
+
+        let receive_message = ReceiveMessageDetails {
+            msg_type: MessageType::PaymentDetailsMessage,
+            data: vec![],
+        };
+        let receive_message = serde_json::to_vec(&receive_message).unwrap();
+        let ret: Response<_> = block_on(engine.receive_message(
+            bob.id.to_string(),
+            receive_message,
+            Some(IDEMPOTENCY.to_owned()),
+        ))
+        .unwrap();
+        assert_eq!(ret.status().as_u16(), 200);
+        let resp = PaymentDetailsResponse {
+            to: ALICE.address,
+            tag: 0, // How do we calculate the tag?
+        };
+        let resp = serde_json::to_string(&resp).unwrap();
+        assert_eq!(ret.body(), &resp);
+
+        // unimplemented for other message types for now
+        let receive_message = ReceiveMessageDetails {
+            msg_type: MessageType::OtherMessage,
+            data: vec![],
+        };
+        let receive_message = serde_json::to_vec(&receive_message).unwrap();
+        let ret: Response<_> = block_on(engine.receive_message(
+            bob.id.to_string(),
+            receive_message,
+            Some(IDEMPOTENCY.to_owned()),
+        ))
+        .unwrap();
+        assert_eq!(ret.status().as_u16(), 200);
+        assert_eq!(ret.body(), "Not implemented");
     }
 }

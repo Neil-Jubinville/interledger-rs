@@ -10,6 +10,7 @@ extern crate lazy_static;
 extern crate env_logger;
 
 #[macro_use]
+#[cfg(test)]
 extern crate serde_json;
 
 #[macro_use]

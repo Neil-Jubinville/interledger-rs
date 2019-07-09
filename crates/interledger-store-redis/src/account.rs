@@ -59,7 +59,7 @@ pub struct Account {
     pub(crate) settlement_engine_asset_scale: Option<u8>,
     #[serde(serialize_with = "optional_address_to_string")]
     pub(crate) settlement_engine_ilp_address: Option<Address>,
-    pub(crate) ethereum_address: Option<EthAddress>,
+    pub(crate) own_address: Option<EthAddress>,
     pub(crate) token_address: Option<EthAddress>,
 }
 
@@ -168,7 +168,7 @@ impl Account {
             settlement_engine_url,
             settlement_engine_asset_scale: details.settlement_engine_asset_scale,
             settlement_engine_ilp_address: details.settlement_engine_ilp_address,
-            ethereum_address: None,
+            own_address: None,
             token_address: None,
         })
     }
@@ -289,9 +289,9 @@ impl ToRedisArgs for AccountWithEncryptedTokens {
             rv.push(settlement_engine_ilp_address.to_bytes().to_vec());
         }
 
-        if let Some(ethereum_address) = account.ethereum_address {
-            "ethereum_address".write_redis_args(&mut rv);
-            rv.push(ethereum_address.to_vec());
+        if let Some(own_address) = account.own_address {
+            "own_address".write_redis_args(&mut rv);
+            rv.push(own_address.to_vec());
         }
 
         if let Some(token_address) = account.token_address {
@@ -329,9 +329,9 @@ impl FromRedisValue for AccountWithEncryptedTokens {
             } else {
                 None
             };
-        let ethereum_address: Option<String> = get_value_option("ethereum_address", &hash)?;
-        let ethereum_address = if let Some(ref ethereum_address) = ethereum_address {
-            EthAddress::from_str(ethereum_address).ok()
+        let own_address: Option<String> = get_value_option("own_address", &hash)?;
+        let own_address = if let Some(ref own_address) = own_address {
+            EthAddress::from_str(own_address).ok()
         } else {
             None
         };
@@ -368,7 +368,7 @@ impl FromRedisValue for AccountWithEncryptedTokens {
                     &hash,
                 )?,
                 settlement_engine_ilp_address,
-                ethereum_address,
+                own_address,
                 token_address,
             },
         })
@@ -540,8 +540,8 @@ impl EthereumAccount for Account {
         self.token_address
     }
 
-    fn ethereum_address(&self) -> EthAddress {
-        self.ethereum_address.unwrap()
+    fn own_address(&self) -> EthAddress {
+        self.own_address.unwrap()
     }
 }
 

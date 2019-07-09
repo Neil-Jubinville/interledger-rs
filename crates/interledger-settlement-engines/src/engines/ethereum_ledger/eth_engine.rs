@@ -503,7 +503,7 @@ mod tests {
         let bob = BOB.clone();
         let store = test_store(bob.clone(), false, true, true);
         let (engine, mut ganache_pid) =
-            test_engine(store.clone(), ALICE_PK.clone(), 0, connector_url.into());
+            test_engine(store.clone(), ALICE_PK.clone(), 0, connector_url);
 
         let ret: Response<_> = block_on(engine.send_money(
             bob.id.to_string(),
@@ -585,7 +585,7 @@ mod tests {
         let create_account_details = vec![1];
         let ret: Response<_> = block_on(engine.create_account(
             bob.id.to_string(),
-            create_account_details.clone().into(),
+            create_account_details.clone(),
             Some(IDEMPOTENCY_FAIL.to_string()),
         ))
         .unwrap_err();

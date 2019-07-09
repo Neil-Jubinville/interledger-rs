@@ -1,6 +1,5 @@
 use super::account::*;
 use super::crypto::generate_keys;
-use base64;
 use bytes::Bytes;
 use futures::{
     future::{err, ok, result, Either},
@@ -1184,13 +1183,12 @@ impl EthereumStore for RedisStore {
                     move |(_conn, addresses): (_, Vec<SlowHashMap<String, Vec<u8>>>)| {
                         let mut ret = Vec::with_capacity(addresses.len());
                         for addr in &addresses {
-                            let ethereum_address =
-                                if let Some(ethereum_address) = addr.get("ethereum_address") {
-                                    ethereum_address
-                                } else {
-                                    return err(());
-                                };
-                            let ethereum_address = EthAddress::from(&ethereum_address[..]);
+                            let own_address = if let Some(own_address) = addr.get("own_address") {
+                                own_address
+                            } else {
+                                return err(());
+                            };
+                            let own_address = EthAddress::from(&own_address[..]);
 
                             let token_address =
                                 if let Some(token_address) = addr.get("token_address") {
@@ -1203,7 +1201,10 @@ impl EthereumStore for RedisStore {
                             } else {
                                 None
                             };
-                            ret.push((ethereum_address, token_address));
+                            ret.push(EthereumAddresses {
+                                own_address,
+                                token_address,
+                            });
                         }
                         ok(ret)
                     },
@@ -1216,17 +1217,16 @@ impl EthereumStore for RedisStore {
         account_ids: Vec<<Self::Account as AccountTrait>::AccountId>,
         data: Vec<EthereumAddresses>,
     ) -> Box<dyn Future<Item = (), Error = ()> + Send> {
-        error!("SAVING ACCOUNT DATA {:?} {:?}", account_ids, data);
         let mut pipe = redis::pipe();
         for (account_id, d) in account_ids.iter().zip(&data) {
-            let token_address = if let Some(token_address) = d.1 {
+            let token_address = if let Some(token_address) = d.token_address {
                 token_address.to_vec()
             } else {
                 vec![]
             };
             let key = ethereum_ledger_key(*account_id);
             let value = &[
-                ("ethereum_address", d.0.to_vec()),
+                ("own_address", d.own_address.to_vec()),
                 ("token_address", token_address),
             ];
             pipe.hset_multiple(key, value).ignore();

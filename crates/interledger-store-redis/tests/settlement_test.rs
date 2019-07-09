@@ -8,6 +8,7 @@ use common::*;
 use ethereum_tx_sign::web3::types::Address as EthAddress;
 use http::StatusCode;
 use interledger_settlement::{IdempotentStore, SettlementStore};
+use interledger_settlement_engines::EthereumAddresses;
 use interledger_settlement_engines::EthereumStore;
 use redis::{cmd, r#async::SharedConnection};
 use std::str::FromStr;
@@ -46,14 +47,18 @@ fn saves_and_loads_ethereum_addreses_properly() {
     block_on(test_store().and_then(|(store, context)| {
         let account_ids = vec![0, 1];
         let account_addresses = vec![
-            (
-                EthAddress::from_str("3cdb3d9e1b74692bb1e3bb5fc81938151ca64b02").unwrap(),
-                Some(EthAddress::from_str("c92be489639a9c61f517bd3b955840fa19bc9b7c").unwrap()),
-            ),
-            (
-                EthAddress::from_str("2fcd07047c209c46a767f8338cb0b14955826826").unwrap(),
-                None,
-            ),
+            EthereumAddresses {
+                own_address: EthAddress::from_str("3cdb3d9e1b74692bb1e3bb5fc81938151ca64b02")
+                    .unwrap(),
+                token_address: Some(
+                    EthAddress::from_str("c92be489639a9c61f517bd3b955840fa19bc9b7c").unwrap(),
+                ),
+            },
+            EthereumAddresses {
+                own_address: EthAddress::from_str("2fcd07047c209c46a767f8338cb0b14955826826")
+                    .unwrap(),
+                token_address: None,
+            },
         ];
         store
             .save_account_addresses(account_ids.clone(), account_addresses.clone())

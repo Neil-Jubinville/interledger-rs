@@ -19,7 +19,7 @@ pub trait EthereumAccount: Account {
 /// First element is the account's ethereum adddress
 /// second element is the account's erc20 token if it's some, otherwise it means
 /// ethereum.
-#[derive(Debug, Extract, Serialize, Deserialize, Clone)]
+#[derive(Debug, Extract, Serialize, Deserialize, Clone, PartialEq)]
 pub struct Addresses {
     pub own_address: Address,
     pub token_address: Option<Address>,

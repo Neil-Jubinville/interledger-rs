@@ -44,7 +44,7 @@ impl EthereumAccount for TestAccount {
         }
         Some(self.token_address)
     }
-    fn ethereum_address(&self) -> Address {
+    fn own_address(&self) -> Address {
         self.address
     }
 }
@@ -83,7 +83,10 @@ impl EthereumStore for TestStore {
         let addresses = self.addresses.read();
         for acc in &account_ids {
             if let Some(d) = addresses.get(&acc) {
-                v.push((d.0, d.1));
+                v.push(Addresses {
+                    own_address: d.own_address,
+                    token_address: d.token_address,
+                });
             } else {
                 // if the account is not found, error out
                 return Box::new(err(()));
@@ -173,7 +176,13 @@ impl TestStore {
                     None
                 };
                 let account_address = account.address;
-                addresses.insert(account.id, (account_address, token_address));
+                addresses.insert(
+                    account.id,
+                    Addresses {
+                        own_address: account_address,
+                        token_address,
+                    },
+                );
             }
         }
 
@@ -205,7 +214,7 @@ pub fn test_engine<Si, S, A>(
     store: S,
     key: Si,
     confs: usize,
-    connector_url: String
+    connector_url: String,
 ) -> (
     EthereumLedgerSettlementEngine<S, Si, A>,
     std::process::Child,

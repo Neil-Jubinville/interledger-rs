@@ -12,6 +12,7 @@ use hyper::{Response, StatusCode};
 use interledger_settlement::{IdempotentStore, SettlementData};
 use reqwest::r#async::Client;
 use ring::digest::{digest, SHA256};
+use serde::{Deserialize, Serialize};
 use std::{marker::PhantomData, str::FromStr, time::Duration};
 use tokio_executor::spawn;
 use url::Url;
@@ -92,37 +93,42 @@ where
         amount: U256,
         token_address: Option<Address>,
     ) -> Box<dyn Future<Item = (), Error = ()> + Send> {
-        // FIXME: We initialize inside the function and not outside due to
-        // invalid pipe errors (for some reason...)
         let (_eloop, transport) = Http::new(&self.endpoint).unwrap();
         let web3 = Web3::new(transport);
-        let mut url = self.connector_url.clone();
-        let poll_frequency = self.poll_frequency;
-        let confirmations = self.confirmations;
 
         // TODO: Convert to and_then syntax once
         // https://github.com/tomusdrw/rust-web3/issues/227 is resolved
+
+        // get the account's nonce
         let nonce = web3
             .eth()
             .transaction_count(self.address, None)
             .wait()
             .unwrap();
 
+        // create the signed transaction
         let tx = make_tx(to, amount, nonce, token_address);
         let signed_tx = self.signer.sign(tx, self.chain_id);
 
+        // submit it and wait for sufficient confirmations
         let tx_receipt = web3
-            .send_raw_transaction_with_confirmation(signed_tx.into(), poll_frequency, confirmations)
+            .send_raw_transaction_with_confirmation(
+                signed_tx.into(),
+                self.poll_frequency,
+                self.confirmations,
+            )
             .wait()
             .unwrap();
         let tx_receipt_clone = tx_receipt.clone();
 
+        let mut url = self.connector_url.clone();
         url.path_segments_mut()
             .expect("Invalid connector URL")
             .push("accounts")
             .push(&to_account_id)
             .push("settlement");
 
+        // notify the accounting system about the completion of the settlement
         let client = Client::new();
         let idempotency_uuid = Uuid::new_v4().to_hyphenated().to_string();
         Box::new(client.post(url)
@@ -155,11 +161,8 @@ where
                 Response::builder().status(400).body(error_msg).unwrap()
             })
             .and_then(move |(_account_id, addresses)| {
-                let (ethereum_address, token_address) = addresses;
-                let ret =
-                    json!({"ethereum_address" : ethereum_address, "token_address" : token_address})
-                        .to_string();
-                Ok(Response::builder().status(200).body(ret).unwrap())
+                let j = serde_json::to_string(&addresses).unwrap();
+                Ok(Response::builder().status(200).body(j).unwrap())
             })
     }
 
@@ -183,7 +186,7 @@ where
                     error!("{}", error_msg);
                     error_msg
                 })
-                .and_then(move |addresses| ok((account_id, addresses[0])))
+                .and_then(move |addresses| ok((account_id, addresses[0].clone())))
         })
     }
 
@@ -273,27 +276,18 @@ where
         body: Vec<u8>,
         idempotency_key: Option<String>,
     ) -> Box<dyn Future<Item = Response<String>, Error = Response<String>> + Send> {
+        let self_clone = self.clone();
         let store: S = self.store.clone();
         let store_clone = self.store.clone();
         let store_clone2 = self.store.clone();
         let idempotency_key_clone = idempotency_key.clone();
 
-        let data = match body.len() {
-            20 => (Address::from(&body[..]), None),
-            40 => (Address::from(&body[..20]), Some(Address::from(&body[20..]))),
-            _ => {
-                return Box::new(err(Response::builder()
-                    .status(502)
-                    .body("INVALID PAYLOAD LENGTH".to_string())
-                    .unwrap()))
-            }
-        };
-
         let input = format!("{}{:?}", account_id, body);
         let input_hash = get_hash_of(input.as_ref());
 
         Box::new(
-            self.check_idempotency(idempotency_key.clone(), input_hash)
+            self_clone
+                .check_idempotency(idempotency_key.clone(), input_hash)
                 .map_err(|res| Response::builder().status(res.0).body(res.1).unwrap())
                 .and_then(move |ret: Option<(StatusCode, Bytes)>| {
                     if let Some(d) = ret {
@@ -303,59 +297,64 @@ where
                             .unwrap()));
                     }
                     Either::B(
-                        result(A::AccountId::from_str(&account_id).map_err({
-                            let store = store.clone();
-                            let idempotency_key = idempotency_key.clone();
-                            move |_err| {
-                                let error_msg = "Unable to parse account".to_string();
-                                error!("{}", error_msg);
-                                let status_code = StatusCode::from_u16(400).unwrap();
-                                let data = Bytes::from(error_msg.clone());
-                                spawn(store.save_idempotent_data(
-                                    idempotency_key,
-                                    input_hash,
-                                    status_code,
-                                    data,
-                                ));
-                                Response::builder()
-                                    .status(status_code)
-                                    .body(error_msg)
-                                    .unwrap()
-                            }
+                        result(serde_json::from_slice(&body).map_err(move |_err| {
+                            let error_msg = "Unable to parse message body".to_string();
+                            error!("{}", error_msg);
+                            Response::builder().status(400).body(error_msg).unwrap()
                         }))
-                        .and_then({
-                            move |account_id| {
-                                store
-                                    .save_account_addresses(vec![account_id], vec![data])
-                                    .map_err(move |_err| {
-                                        let error_msg = format!(
-                                            "Error creating account: {}, {:?}",
-                                            account_id, data
-                                        );
-                                        error!("{}", error_msg);
-                                        let status_code = StatusCode::from_u16(400).unwrap();
-                                        let data = Bytes::from(error_msg.clone());
-                                        spawn(store_clone.save_idempotent_data(
-                                            idempotency_key,
-                                            input_hash,
-                                            status_code,
-                                            data,
-                                        ));
-                                        Response::builder().status(400).body(error_msg).unwrap()
-                                    })
-                            }
-                        })
-                        .and_then(move |_| {
-                            spawn(store_clone2.save_idempotent_data(
-                                idempotency_key_clone,
-                                input_hash,
-                                StatusCode::from_u16(201).unwrap(),
-                                Bytes::from("CREATED"),
-                            ));
-                            Ok(Response::builder()
-                                .status(201)
-                                .body("CREATED".to_string())
-                                .unwrap())
+                        .and_then(move |addresses: Addresses| {
+                            result(A::AccountId::from_str(&account_id).map_err({
+                                let store = store.clone();
+                                let idempotency_key = idempotency_key.clone();
+                                move |_err| {
+                                    let error_msg = "Unable to parse account".to_string();
+                                    error!("{}", error_msg);
+                                    let status_code = StatusCode::from_u16(400).unwrap();
+                                    let data = Bytes::from(error_msg.clone());
+                                    spawn(store.save_idempotent_data(
+                                        idempotency_key,
+                                        input_hash,
+                                        status_code,
+                                        data,
+                                    ));
+                                    Response::builder()
+                                        .status(status_code)
+                                        .body(error_msg)
+                                        .unwrap()
+                                }
+                            }))
+                            .and_then({
+                                move |account_id| {
+                                    store
+                                        .save_account_addresses(vec![account_id], vec![addresses])
+                                        .map_err(move |_err| {
+                                            let error_msg =
+                                                format!("Error creating account: {}", account_id);
+                                            error!("{}", error_msg);
+                                            let status_code = StatusCode::from_u16(400).unwrap();
+                                            let data = Bytes::from(error_msg.clone());
+                                            spawn(store_clone.save_idempotent_data(
+                                                idempotency_key,
+                                                input_hash,
+                                                status_code,
+                                                data,
+                                            ));
+                                            Response::builder().status(400).body(error_msg).unwrap()
+                                        })
+                                }
+                            })
+                            .and_then(move |_| {
+                                spawn(store_clone2.save_idempotent_data(
+                                    idempotency_key_clone,
+                                    input_hash,
+                                    StatusCode::from_u16(201).unwrap(),
+                                    Bytes::from("CREATED"),
+                                ));
+                                Ok(Response::builder()
+                                    .status(201)
+                                    .body("CREATED".to_string())
+                                    .unwrap())
+                            })
                         }),
                     )
                 }),
@@ -379,6 +378,7 @@ where
 
         let input = format!("{}{:?}", account_id, body);
         let input_hash = get_hash_of(input.as_ref());
+
         Box::new(
             self.check_idempotency(idempotency_key.clone(), input_hash)
                 .map_err(|res| Response::builder().status(res.0).body(res.1).unwrap())
@@ -404,9 +404,13 @@ where
                                 Response::builder().status(400).body(error_msg).unwrap()
                             })
                             .and_then(move |(_account_id, addresses)| {
-                                let (to, token_addr) = addresses;
                                 self_clone
-                                    .settle_to(to, account_id_clone, amount, token_addr)
+                                    .settle_to(
+                                        addresses.own_address,
+                                        account_id_clone,
+                                        amount,
+                                        addresses.token_address,
+                                    )
                                     .map_err(move |_| {
                                         let error_msg =
                                             "Error connecting to the blockchain.".to_string();
@@ -447,13 +451,13 @@ fn get_hash_of(preimage: &[u8]) -> [u8; 32] {
 
 #[cfg(test)]
 mod tests {
-    use super::super::fixtures::{BOB, SETTLEMENT_API};
+    use super::super::fixtures::{ALICE, BOB, SETTLEMENT_API};
     use super::super::test_helpers::{block_on, test_api, test_engine, test_store, TestAccount};
     use super::*;
     use mockito;
 
-    static ALICE_ADDR: &str = "3cdb3d9e1b74692bb1e3bb5fc81938151ca64b02";
     static IDEMPOTENCY: &str = "AJKJNUjM0oyiAN46";
+    static IDEMPOTENCY_FAIL: &str = "AAAAAAAAAAAAAAAA";
 
     lazy_static! {
         pub static ref ALICE_PK: String =
@@ -551,13 +555,26 @@ mod tests {
         let store = test_store(bob.clone(), false, false, false);
         let engine = test_api(store.clone(), ALICE_PK.clone(), 0);
 
-        // Bob's ILP details have already been inserted. This endpoint gets
-        // automatically called when creating the account.
-
-        let create_account_details = bob.address.to_vec();
+        // fails on invalid input data
+        let create_account_details = vec![1];
         let ret: Response<_> = block_on(engine.create_account(
             bob.id.to_string(),
-            create_account_details.clone(),
+            create_account_details.clone().into(),
+            Some(IDEMPOTENCY_FAIL.to_string()),
+        ))
+        .unwrap_err();
+        assert_eq!(ret.status().as_u16(), 400);
+        assert_eq!(ret.body(), "Unable to parse message body");
+
+        let create_account_details = json!({
+            "own_address": bob.address,
+            "token_address": null,
+        })
+        .to_string();
+
+        let ret: Response<_> = block_on(engine.create_account(
+            bob.id.to_string(),
+            create_account_details.clone().into(),
             Some(IDEMPOTENCY.to_string()),
         ))
         .unwrap();
@@ -566,13 +583,12 @@ mod tests {
 
         let ret: Response<_> = engine.get_account(bob.id.to_string()).wait().unwrap();
         assert_eq!(ret.status().as_u16(), 200);
-        let data = json!({"ethereum_address" : bob.address, "token_address" : null}).to_string();
-        assert_eq!(ret.body(), &data);
+        assert_eq!(ret.body(), &create_account_details);
 
         // check that it's idempotent
         let ret: Response<_> = block_on(engine.create_account(
             bob.id.to_string(),
-            create_account_details.clone(),
+            create_account_details.clone().into(),
             Some(IDEMPOTENCY.to_string()),
         ))
         .unwrap();
@@ -582,7 +598,7 @@ mod tests {
         // fails with different id and same data
         let ret: Response<_> = block_on(engine.create_account(
             "42".to_string(),
-            create_account_details,
+            create_account_details.clone().into(),
             Some(IDEMPOTENCY.to_string()),
         ))
         .unwrap_err();
@@ -592,11 +608,15 @@ mod tests {
             "Provided idempotency key is tied to other input"
         );
 
-        // fails with same id and different data
-        let create_account_details = Vec::from(ALICE_ADDR);
+        // // fails with same id and different data
+        let create_account_details = json!({
+            "own_address": ALICE.address,
+            "token_address": null,
+        })
+        .to_string();
         let ret: Response<_> = block_on(engine.create_account(
             bob.id.to_string(),
-            create_account_details.clone(),
+            create_account_details.clone().into(),
             Some(IDEMPOTENCY.to_string()),
         ))
         .unwrap_err();
@@ -609,7 +629,7 @@ mod tests {
         // fails with different id and different data
         let ret: Response<_> = block_on(engine.create_account(
             "42".to_string(),
-            create_account_details,
+            create_account_details.into(),
             Some(IDEMPOTENCY.to_string()),
         ))
         .unwrap_err();

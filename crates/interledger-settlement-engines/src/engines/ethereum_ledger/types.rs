@@ -9,7 +9,7 @@ use parity_crypto::Keccak256;
 use std::str::FromStr;
 
 pub trait EthereumAccount: Account {
-    fn ethereum_address(&self) -> Address;
+    fn own_address(&self) -> Address;
 
     fn token_address(&self) -> Option<Address> {
         None
@@ -19,7 +19,11 @@ pub trait EthereumAccount: Account {
 /// First element is the account's ethereum adddress
 /// second element is the account's erc20 token if it's some, otherwise it means
 /// ethereum.
-pub type Addresses = (Address, Option<Address>);
+#[derive(Debug, Extract, Serialize, Deserialize, Clone)]
+pub struct Addresses {
+    pub own_address: Address,
+    pub token_address: Option<Address>,
+}
 
 pub trait EthereumStore {
     type Account: EthereumAccount;

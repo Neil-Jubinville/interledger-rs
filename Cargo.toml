@@ -20,4 +20,4 @@ members = [
 ]
 
 [profile.dev]
-codegen-units = 1
+codegen-units = 4

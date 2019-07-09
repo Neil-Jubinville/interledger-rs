@@ -205,6 +205,7 @@ pub fn test_engine<Si, S, A>(
     store: S,
     key: Si,
     confs: usize,
+    connector_url: String
 ) -> (
     EthereumLedgerSettlementEngine<S, Si, A>,
     std::process::Child,
@@ -230,7 +231,7 @@ where
         chain_id,
         confs,
         poll_frequency,
-        "http://localhost:7071".parse().unwrap(),
+        connector_url.parse().unwrap(),
     );
 
     (engine, ganache_pid)

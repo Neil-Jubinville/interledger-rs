@@ -10,11 +10,12 @@ use ethereum_tx_sign::web3::{
 };
 use hyper::{Response, StatusCode};
 use interledger_settlement::{IdempotentStore, SettlementData};
-// use reqwest::r#async::Client; // used in buggy code
+use reqwest::r#async::Client;
 use ring::digest::{digest, SHA256};
 use std::{marker::PhantomData, str::FromStr, time::Duration};
 use tokio_executor::spawn;
 use url::Url;
+use uuid::Uuid;
 
 use crate::SettlementEngine;
 
@@ -87,7 +88,7 @@ where
     pub fn settle_to(
         &self,
         to: Address,
-        _to_account_id: String,
+        to_account_id: String,
         amount: U256,
         token_address: Option<Address>,
     ) -> Box<dyn Future<Item = (), Error = ()> + Send> {
@@ -95,73 +96,51 @@ where
         // invalid pipe errors (for some reason...)
         let (_eloop, transport) = Http::new(&self.endpoint).unwrap();
         let web3 = Web3::new(transport);
-        let _url = self.connector_url.clone();
-        let _poll_frequency = self.poll_frequency;
-        let _confirmations = self.confirmations;
+        let mut url = self.connector_url.clone();
+        let poll_frequency = self.poll_frequency;
+        let confirmations = self.confirmations;
 
-        // FIXME: For some reason, when running asynchronously, all calls time out.
-        // 1. get the nonce
-        // let self_clone = self.clone();
-        // web3.eth()
-        // .transaction_count(self.address.clone(), None)
-        // .map_err(move |err| error!("Couldn't fetch nonce. Got error: {:#?}", err))
-        // .and_then(move |nonce| {
-        //     // 2. create the transaction
-        //     let tx = make_tx(to, amount, nonce, token_address);
-        //     // 3. sign the transaction
-        //     let signed_tx = self_clone.signer.sign(tx, 1);
-        //     // 4. send the transaction and notify the connector
-        //     spawn(
-        //         web3.send_raw_transaction_with_confirmation(
-        //             signed_tx.into(), poll_frequency, confirmations,
-        //         )
-        //         .map_err(move |err| error!("Could not submit raw transaction. Error: {:#?}", err))
-        //         .and_then(move |tx_receipt| {
-        //             let tx_receipt_clone = tx_receipt.clone();
-        //             let client = Client::new();
-        //             url
-        //                 .path_segments_mut()
-        //                 .expect("Invalid connector URL")
-        //                 .push("accounts")
-        //                     .push(&to_account_id)
-        //                     .push("settlement");
-
-        //                 client.post(url)
-        //                     .header("Content-Type", "application/octet-stream")
-        //                     .header("Idempotency-Key", "asdf")
-        //                     .body(amount.to_string())
-        //                     .send()
-        //                     .map_err(move |err| error!("Error notifying accounting system about transaction {:?}: {:?}", tx_receipt_clone, err))
-        //                     .and_then(move |response| {
-        //                         if response.status().is_success() {
-        //                             trace!("Successfully notified accounting system about the settlement of: {:?}", tx_receipt);
-        //                             Ok(())
-        //                         } else {
-        //                             error!("Error notifying accounting system about transaction {:?}. It responded with HTTP code: {}", tx_receipt, response.status());
-        //                             Err(())
-        //                         }
-        //                     })
-        //             })
-        //         );
-
-        //         Ok(())
-        // })
+        // TODO: Convert to and_then syntax once
+        // https://github.com/tomusdrw/rust-web3/issues/227 is resolved
         let nonce = web3
             .eth()
             .transaction_count(self.address, None)
             .wait()
             .unwrap();
+
         let tx = make_tx(to, amount, nonce, token_address);
-        let signed_tx = self.signer.sign(tx, 1);
-        let _receipt = web3
-            .send_raw_transaction_with_confirmation(
-                signed_tx.into(),
-                self.poll_frequency,
-                self.confirmations,
-            )
+        let signed_tx = self.signer.sign(tx, self.chain_id);
+
+        let tx_receipt = web3
+            .send_raw_transaction_with_confirmation(signed_tx.into(), poll_frequency, confirmations)
             .wait()
             .unwrap();
-        Box::new(ok(()))
+        let tx_receipt_clone = tx_receipt.clone();
+
+        url.path_segments_mut()
+            .expect("Invalid connector URL")
+            .push("accounts")
+            .push(&to_account_id)
+            .push("settlement");
+
+        let client = Client::new();
+        let idempotency_uuid = Uuid::new_v4().to_hyphenated().to_string();
+        Box::new(client.post(url)
+            .header("Content-Type", "application/octet-stream")
+            .header("Idempotency-Key", idempotency_uuid)
+            .body(amount.to_string())
+            .send()
+            .map_err(move |err| error!("Error notifying accounting system about transaction {:?}: {:?}", tx_receipt_clone, err))
+            .and_then(move |response| {
+                if response.status().is_success() {
+                    trace!("Successfully notified accounting system about the settlement of: {:?}", tx_receipt);
+                    Ok(())
+                } else {
+                    error!("Error notifying accounting system about transaction {:?}. It responded with HTTP code: {}", tx_receipt, response.status());
+                    Err(())
+                }
+            })
+        )
     }
 
     #[allow(unused)]
@@ -468,9 +447,10 @@ fn get_hash_of(preimage: &[u8]) -> [u8; 32] {
 
 #[cfg(test)]
 mod tests {
-    use super::super::fixtures::BOB;
+    use super::super::fixtures::{BOB, SETTLEMENT_API};
     use super::super::test_helpers::{block_on, test_api, test_engine, test_store, TestAccount};
     use super::*;
+    use mockito;
 
     static ALICE_ADDR: &str = "3cdb3d9e1b74692bb1e3bb5fc81938151ca64b02";
     static IDEMPOTENCY: &str = "AJKJNUjM0oyiAN46";
@@ -483,9 +463,17 @@ mod tests {
     #[test]
     // All tests involving ganache must be run in 1 suite so that they run serially
     fn test_send_money() {
+        let m = mockito::mock("POST", SETTLEMENT_API.clone())
+            .match_header("content-type", "application/octet-stream")
+            .with_status(200)
+            .with_body("OK".to_string())
+            .expect(1) // only 1 request is made to the connector (idempotency works properly)
+            .create();
+        let connector_url = mockito::server_url();
         let bob = BOB.clone();
         let store = test_store(bob.clone(), false, true, true);
-        let (engine, mut ganache_pid) = test_engine(store.clone(), ALICE_PK.clone(), 0);
+        let (engine, mut ganache_pid) =
+            test_engine(store.clone(), ALICE_PK.clone(), 0, connector_url.into());
 
         let ret: Response<_> = block_on(engine.send_money(
             bob.id.to_string(),
@@ -553,6 +541,7 @@ mod tests {
         assert_eq!(cached_data.0, 200);
         assert_eq!(cached_data.1, "OK".to_string());
 
+        m.assert();
         ganache_pid.kill().unwrap();
     }
 

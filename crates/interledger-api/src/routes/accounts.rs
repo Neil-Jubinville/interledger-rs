@@ -75,19 +75,19 @@ impl_web! {
                     if let Some(se_url)  = se_url {
                         let id = account.id();
                         let mut se_url = Url::parse(&se_url).map_err(|err| error!("Invalid URL: {:?}", err))?;
+                        let idempotency_uuid = uuid::Uuid::new_v4().to_hyphenated().to_string();
                         se_url
                             .path_segments_mut()
                             .expect("Invalid settlement engine URL")
-                            .push("accounts");
+                            .push("accounts")
+                            .push(&id.to_string());
                         trace!(
                             "Sending account {} creation request to settlement engine: {:?}",
                             id,
                             se_url.clone()
                         );
                         spawn(Client::new().post(se_url.clone())
-                            .json(&json!({
-                                "id": id,
-                            }))
+                            .header("Idempotency-Key", idempotency_uuid)
                             .send()
                             .map_err(move |err| {
                                 error!("Error sending account creation command to the settlement engine {}: {:?}", se_url, err)
@@ -181,3 +181,5 @@ impl_web! {
         }
     }
 }
+
+// TODO add test that ensures the /accounts endpoint of the engine gets hit.

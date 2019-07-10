@@ -27,6 +27,10 @@ tower-web = "0.3.7"
 reqwest = "0.9.18"
 url = "1.7.2"
 tokio-executor = "0.1.7"
+uuid = "0.7.4"
+
+[dev-dependencies]
+mockito = "0.17.1"
 
 [badges]
 circle-ci = { repository = "emschwartz/interledger-rs" }

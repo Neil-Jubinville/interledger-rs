@@ -9,6 +9,7 @@ use config;
 use hex;
 use interledger::{cli::*, node::*};
 use interledger_ildcp::IldcpResponseBuilder;
+use interledger_settlement_engines::EthAddress;
 use interledger_packet::Address;
 use std::str::FromStr;
 use std::time::Duration;
@@ -126,6 +127,10 @@ pub fn main() {
                                 .long("ethereum_endpoint")
                                 .help("Ethereum node endpoint")
                                 .default_value("http://127.0.0.1:8545"),
+                            Arg::with_name("token_address")
+                                .long("token_address")
+                                .help("The address of the ERC20 token to be used for settlement")
+                                .default_value(""),
                             Arg::with_name("connector_url")
                                 .long("connector_url")
                                 .help("Connector Settlement API endpoint")
@@ -327,6 +332,12 @@ pub fn main() {
                 let private_key: String = value_t!(matches, "key", String).unwrap();
                 let ethereum_endpoint: String =
                     value_t!(matches, "ethereum_endpoint", String).unwrap();
+                let token_address = value_t!(matches, "token_address", String).unwrap();
+                let token_address = if token_address.len() == 20 {
+                    Some(EthAddress::from_str(&token_address).unwrap())
+                } else {
+                    None
+                };
                 let connector_url: String = value_t!(matches, "connector_url", String).unwrap();
                 let redis_uri =
                     value_t!(matches, "redis_uri", String).expect("redis_uri is required");
@@ -354,6 +365,7 @@ pub fn main() {
                     confirmations,
                     poll_frequency,
                     Url::parse(&connector_url).unwrap(),
+                    token_address,
                 ));
             }
             _ => app.print_help().unwrap(),

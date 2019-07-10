@@ -26,6 +26,7 @@ pub use self::engines::ethereum_ledger::{
     EthereumAccount, EthereumAddresses, EthereumLedgerSettlementEngine, EthereumLedgerTxSigner,
     EthereumStore,
 };
+pub use ethereum_tx_sign::web3::types::Address as EthAddress;
 
 mod api;
 pub use self::api::SettlementEngineApi;

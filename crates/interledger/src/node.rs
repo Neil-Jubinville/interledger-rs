@@ -16,7 +16,7 @@ use interledger_service_util::{
 };
 use interledger_settlement::{SettlementApi, SettlementMessageService};
 use interledger_settlement_engines::{
-    EthereumLedgerSettlementEngine, EthereumLedgerTxSigner, SettlementEngineApi,
+    EthAddress, EthereumLedgerSettlementEngine, EthereumLedgerTxSigner, SettlementEngineApi,
 };
 use interledger_store_redis::{Account, ConnectionInfo, IntoConnectionInfo, RedisStoreBuilder};
 use interledger_stream::StreamReceiverService;
@@ -321,6 +321,7 @@ pub fn run_settlement_engine<R, Si>(
     confirmations: usize,
     poll_frequency: Duration,
     connector_url: Url,
+    token_address: Option<EthAddress>
 ) -> impl Future<Item = (), Error = ()>
 where
     R: IntoConnectionInfo,
@@ -340,6 +341,7 @@ where
                 confirmations,
                 poll_frequency,
                 connector_url,
+                token_address,
             );
 
             let addr = SocketAddr::from(([127, 0, 0, 1], settlement_port));

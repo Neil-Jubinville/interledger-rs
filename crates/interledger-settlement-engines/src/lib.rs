@@ -52,7 +52,6 @@ pub trait SettlementEngine {
     fn create_account(
         &self,
         account_id: String,
-        account_details: Vec<u8>,
         idempotency_key: Option<String>,
     ) -> Box<dyn Future<Item = Response<String>, Error = Response<String>> + Send>;
 }

@@ -5,12 +5,13 @@ use bytes::Bytes;
 use ethereum_tx_sign::web3::{
     api::Web3,
     futures::future::{ok, result, Either, Future},
+    futures::stream::Stream,
     transports::Http,
     types::{Address, U256},
 };
 use hyper::{Response, StatusCode};
 use interledger_settlement::{IdempotentStore, SettlementData};
-use reqwest::r#async::Client;
+use reqwest::r#async::{Client, Response as HttpResponse};
 use ring::digest::{digest, SHA256};
 use serde::{Deserialize, Serialize};
 use std::{marker::PhantomData, str::FromStr, time::Duration};
@@ -22,8 +23,7 @@ use crate::SettlementEngine;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 enum MessageType {
-    PaymentDetailsMessage = 0,
-    OtherMessage = 1, // To be done.
+    PaymentDetailsRequest = 0,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -32,10 +32,28 @@ struct ReceiveMessageDetails {
     data: Vec<u8>,
 }
 
+impl ReceiveMessageDetails {
+    fn new_payment_details_request() -> Self {
+        ReceiveMessageDetails {
+            msg_type: MessageType::PaymentDetailsRequest,
+            data: vec![],
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct PaymentDetailsResponse {
-    to: Address,
-    tag: u64,
+    to: Addresses,
+    tag: String,
+}
+
+impl PaymentDetailsResponse {
+    fn new(to: Addresses) -> Self {
+        PaymentDetailsResponse {
+            to,
+            tag: Uuid::new_v4().to_hyphenated().to_string(),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -46,7 +64,7 @@ pub struct EthereumLedgerSettlementEngine<S, Si, A> {
 
     // Configuration data
     pub endpoint: String,
-    pub address: Address,
+    pub address: Addresses,
     pub chain_id: u8,
     pub confirmations: usize,
     pub poll_frequency: Duration,
@@ -67,8 +85,12 @@ where
         confirmations: usize,
         poll_frequency: Duration,
         connector_url: Url,
+        token_address: Option<Address>,
     ) -> Self {
-        let address = signer.address();
+        let address = Addresses {
+            own_address: signer.address(),
+            token_address,
+        };
         EthereumLedgerSettlementEngine {
             endpoint,
             store,
@@ -100,7 +122,7 @@ where
         // get the account's nonce
         let nonce = web3
             .eth()
-            .transaction_count(self.address, None)
+            .transaction_count(self.address.own_address, None)
             .wait()
             .unwrap();
 
@@ -255,30 +277,16 @@ where
                                 Response::builder().status(400).body(error_msg).unwrap()
                             })
                             .and_then(move |message: ReceiveMessageDetails| {
-                                self_clone
-                                    .load_account(account_id)
-                                    .map_err(move |err| {
-                                        let error_msg = format!("Error loading account {:?}", err);
-                                        error!("{}", error_msg);
-                                        Response::builder().status(400).body(error_msg).unwrap()
-                                    })
-                                    .and_then(move |(_account_id, _addresses)| {
-                                        // TODO: Perform some store action
-                                        // similar to:
-                                        // https://github.com/matdehaast/ilp-settlement-xrp/commit/b3d26fac46aceabb307972dc737a084f78254532#diff-7915c1b96957c8fad130f9069c5ef850R32
-                                        let resp = match message.msg_type {
-                                            MessageType::PaymentDetailsMessage => {
-                                                let ret = PaymentDetailsResponse {
-                                                    to: self_clone.address,
-                                                    tag: 0, // How do we calculate the tag?
-                                                };
-                                                serde_json::to_string(&ret).unwrap()
-                                            }
-                                            _ => "Not implemented".to_string(),
-                                        };
-                                        // the received message.
-                                        Ok(Response::builder().status(200).body(resp).unwrap())
-                                    })
+                                // We are only returning our information, so
+                                // there is no need to return any data about the
+                                // provided account.
+                                let resp = match message.msg_type {
+                                    MessageType::PaymentDetailsRequest => {
+                                        let ret = PaymentDetailsResponse::new(self_clone.address);
+                                        serde_json::to_string(&ret).unwrap()
+                                    }
+                                };
+                                Ok(Response::builder().status(200).body(resp).unwrap())
                             }),
                     )
                 }),
@@ -288,18 +296,14 @@ where
     fn create_account(
         &self,
         account_id: String,
-        body: Vec<u8>,
         idempotency_key: Option<String>,
     ) -> Box<dyn Future<Item = Response<String>, Error = Response<String>> + Send> {
         let self_clone = self.clone();
         let store: S = self.store.clone();
-        let store_clone = self.store.clone();
         let store_clone2 = self.store.clone();
         let idempotency_key_clone = idempotency_key.clone();
 
-        let input = format!("{}{:?}", account_id, body);
-        let input_hash = get_hash_of(input.as_ref());
-
+        let input_hash = get_hash_of(account_id.as_ref());
         Box::new(
             self_clone
                 .check_idempotency(idempotency_key.clone(), input_hash)
@@ -312,65 +316,88 @@ where
                             .unwrap()));
                     }
                     Either::B(
-                        result(serde_json::from_slice(&body).map_err(move |_err| {
-                            let error_msg =
-                                "Unable to parse message body when creating account".to_owned();
-                            error!("{}", error_msg);
-                            Response::builder().status(400).body(error_msg).unwrap()
-                        }))
-                        .and_then(move |addresses: Addresses| {
-                            result(A::AccountId::from_str(&account_id).map_err({
-                                let store = store.clone();
-                                let idempotency_key = idempotency_key.clone();
-                                move |_err| {
-                                    let error_msg = "Unable to parse account".to_string();
-                                    error!("{}", error_msg);
-                                    let status_code = StatusCode::from_u16(400).unwrap();
-                                    let data = Bytes::from(error_msg.clone());
-                                    spawn(store.save_idempotent_data(
-                                        idempotency_key,
-                                        input_hash,
-                                        status_code,
-                                        data,
-                                    ));
-                                    Response::builder()
-                                        .status(status_code)
-                                        .body(error_msg)
-                                        .unwrap()
-                                }
-                            }))
-                            .and_then({
-                                move |account_id| {
-                                    store
-                                        .save_account_addresses(vec![account_id], vec![addresses])
-                                        .map_err(move |_err| {
-                                            let error_msg =
-                                                format!("Error creating account: {}", account_id);
-                                            error!("{}", error_msg);
-                                            let status_code = StatusCode::from_u16(400).unwrap();
-                                            let data = Bytes::from(error_msg.clone());
-                                            spawn(store_clone.save_idempotent_data(
-                                                idempotency_key,
-                                                input_hash,
-                                                status_code,
-                                                data,
-                                            ));
-                                            Response::builder().status(400).body(error_msg).unwrap()
-                                        })
-                                }
-                            })
-                            .and_then(move |_| {
-                                spawn(store_clone2.save_idempotent_data(
-                                    idempotency_key_clone,
+                        result(A::AccountId::from_str(&account_id).map_err({
+                            let store = store.clone();
+                            let idempotency_key = idempotency_key.clone();
+                            move |_err| {
+                                let error_msg = "Unable to parse account".to_string();
+                                error!("{}", error_msg);
+                                let status_code = StatusCode::from_u16(400).unwrap();
+                                let data = Bytes::from(error_msg.clone());
+                                spawn(store.save_idempotent_data(
+                                    idempotency_key,
                                     input_hash,
-                                    StatusCode::from_u16(201).unwrap(),
-                                    Bytes::from("CREATED"),
+                                    status_code,
+                                    data,
                                 ));
-                                Ok(Response::builder()
-                                    .status(201)
-                                    .body("CREATED".to_string())
-                                    .unwrap())
-                            })
+                                Response::builder()
+                                    .status(status_code)
+                                    .body(error_msg)
+                                    .unwrap()
+                            }
+                        }))
+                        .and_then(move |account_id| {
+                            // We make a POST request to OUR connector's `messages`
+                            // endpoint. This will in turn send an outgoing
+                            // request to its peer connector, which will ask its
+                            // own engine about its settlement information. Then,
+                            // we store that information and use it when
+                            // performing settlements.
+                            let idempotency_uuid = Uuid::new_v4().to_hyphenated().to_string();
+                            let req = ReceiveMessageDetails::new_payment_details_request();
+                            let j = serde_json::to_vec(&req).unwrap();
+                            let client = Client::new();
+                            let mut url = self_clone.connector_url.clone();
+                            url.path_segments_mut()
+                                .expect("Invalid connector URL")
+                                .push("accounts")
+                                .push(&account_id.to_string())
+                                .push("messages");
+                            client
+                                .post(url)
+                                .header("Content-Type", "application/octet-stream")
+                                .header("Idempotency-Key", idempotency_uuid)
+                                .body(j)
+                                .send()
+                                .map_err(move |err| {
+                                    let err = format!("Couldn't notify connector {:?}", err);
+                                    error!("{}", err);
+                                    Response::builder().status(500).body(err).unwrap()
+                                })
+                                .and_then(move |resp| {
+                                    spawn(store_clone2.save_idempotent_data(
+                                        idempotency_key_clone,
+                                        input_hash,
+                                        StatusCode::from_u16(201).unwrap(),
+                                        Bytes::from("CREATED"),
+                                    ));
+                                    parse_body_into_payment_details(resp).and_then(
+                                        move |payment_details| {
+                                            store
+                                                .save_account_addresses(
+                                                    vec![account_id],
+                                                    vec![payment_details.to],
+                                                )
+                                                .map_err(move |err| {
+                                                    let err = format!(
+                                                        "Couldn't connect to store {:?}",
+                                                        err
+                                                    );
+                                                    error!("{}", err);
+                                                    Response::builder()
+                                                        .status(500)
+                                                        .body(err)
+                                                        .unwrap()
+                                                })
+                                        },
+                                    )
+                                })
+                        })
+                        .and_then(move |_| {
+                            Ok(Response::builder()
+                                .status(201)
+                                .body("CREATED".to_string())
+                                .unwrap())
                         }),
                     )
                 }),
@@ -459,6 +486,25 @@ where
     }
 }
 
+fn parse_body_into_payment_details(
+    resp: HttpResponse,
+) -> impl Future<Item = PaymentDetailsResponse, Error = Response<String>> {
+    resp.into_body()
+        .concat2()
+        .map_err(|err| {
+            let err = format!("Couldn't retrieve body {:?}", err);
+            error!("{}", err);
+            Response::builder().status(500).body(err).unwrap()
+        })
+        .and_then(move |body| {
+            serde_json::from_slice::<PaymentDetailsResponse>(&body).map_err(|err| {
+                let err = format!("Couldn't parse body into payment details {:?}", err);
+                error!("{}", err);
+                Response::builder().status(500).body(err).unwrap()
+            })
+        })
+}
+
 fn get_hash_of(preimage: &[u8]) -> [u8; 32] {
     let mut hash = [0; 32];
     hash.copy_from_slice(digest(&SHA256, preimage).as_ref());
@@ -467,13 +513,12 @@ fn get_hash_of(preimage: &[u8]) -> [u8; 32] {
 
 #[cfg(test)]
 mod tests {
-    use super::super::fixtures::{ALICE, BOB, SETTLEMENT_API};
+    use super::super::fixtures::{ALICE, BOB, MESSAGES_API, SETTLEMENT_API};
     use super::super::test_helpers::{block_on, test_api, test_engine, test_store, TestAccount};
     use super::*;
     use mockito;
 
     static IDEMPOTENCY: &str = "AJKJNUjM0oyiAN46";
-    static IDEMPOTENCY_FAIL: &str = "AAAAAAAAAAAAAAAA";
 
     lazy_static! {
         pub static ref ALICE_PK: String =
@@ -568,132 +613,102 @@ mod tests {
     #[test]
     fn test_create_get_account() {
         let bob: TestAccount = BOB.clone();
-        let store = test_store(bob.clone(), false, false, false);
-        let engine = test_api(store.clone(), ALICE_PK.clone(), 0);
 
-        // fails on invalid input data
-        let create_account_details = vec![1];
-        let ret: Response<_> = block_on(engine.create_account(
-            bob.id.to_string(),
-            create_account_details.clone(),
-            Some(IDEMPOTENCY_FAIL.to_string()),
-        ))
-        .unwrap_err();
-        assert_eq!(ret.status().as_u16(), 400);
-        assert_eq!(
-            ret.body(),
-            "Unable to parse message body when creating account"
-        );
-
-        let create_account_details = json!({
-            "own_address": bob.address.to_owned(),
-            "token_address": null,
+        let body_se_data = serde_json::to_string(&PaymentDetailsResponse {
+            to: Addresses {
+                own_address: bob.address,
+                token_address: None,
+            },
+            tag: "some_tag".to_string(),
         })
-        .to_string();
-
-        let ret: Response<_> = block_on(engine.create_account(
-            bob.id.to_string(),
-            create_account_details.clone().into(),
-            Some(IDEMPOTENCY.to_string()),
-        ))
         .unwrap();
+
+        // simulate our connector that accepts the request, forwards it to the
+        // peer's connector and returns the peer's se addresses
+        let m = mockito::mock("POST", MESSAGES_API.clone())
+            .match_header("content-type", "application/octet-stream")
+            .with_status(200)
+            .with_body(body_se_data)
+            .expect(1) // only 1 request is made to the connector (idempotency works properly)
+            .create();
+        let connector_url = mockito::server_url();
+
+        let store = test_store(bob.clone(), false, false, false);
+        let engine = test_api(store.clone(), ALICE_PK.clone(), 0, connector_url);
+
+        let ret: Response<_> =
+            block_on(engine.create_account(bob.id.to_string(), Some(IDEMPOTENCY.to_string())))
+                .unwrap();
         assert_eq!(ret.status().as_u16(), 201);
         assert_eq!(ret.body(), "CREATED");
 
         let ret: Response<_> = engine.get_account(bob.id.to_string()).wait().unwrap();
         assert_eq!(ret.status().as_u16(), 200);
-        assert_eq!(ret.body(), &create_account_details);
 
         // check that it's idempotent
-        let ret: Response<_> = block_on(engine.create_account(
-            bob.id.to_string(),
-            create_account_details.clone().into(),
-            Some(IDEMPOTENCY.to_string()),
-        ))
-        .unwrap();
+        let ret: Response<_> =
+            block_on(engine.create_account(bob.id.to_string(), Some(IDEMPOTENCY.to_string())))
+                .unwrap();
         assert_eq!(ret.status().as_u16(), 201);
         assert_eq!(ret.body(), "CREATED");
 
-        // fails with different id and same data
-        let ret: Response<_> = block_on(engine.create_account(
-            "42".to_string(),
-            create_account_details.clone().into(),
-            Some(IDEMPOTENCY.to_string()),
-        ))
-        .unwrap_err();
+        // fails with different id
+        let ret: Response<_> =
+            block_on(engine.create_account("42".to_string(), Some(IDEMPOTENCY.to_string())))
+                .unwrap_err();
         assert_eq!(ret.status().as_u16(), 409);
         assert_eq!(
             ret.body(),
             "Provided idempotency key is tied to other input"
         );
 
-        // // fails with same id and different data
-        let create_account_details = json!({
-            "own_address": ALICE.address,
-            "token_address": null,
-        })
-        .to_string();
-        let ret: Response<_> = block_on(engine.create_account(
-            bob.id.to_string(),
-            create_account_details.clone().into(),
-            Some(IDEMPOTENCY.to_string()),
-        ))
-        .unwrap_err();
-        assert_eq!(ret.status().as_u16(), 409);
-        assert_eq!(
-            ret.body(),
-            "Provided idempotency key is tied to other input"
-        );
-
-        // fails with different id and different data
-        let ret: Response<_> = block_on(engine.create_account(
-            "42".to_string(),
-            create_account_details.into(),
-            Some(IDEMPOTENCY.to_string()),
-        ))
-        .unwrap_err();
-        assert_eq!(ret.status().as_u16(), 409);
-        assert_eq!(
-            ret.body(),
-            "Provided idempotency key is tied to other input"
-        );
+        // Bob's addresses must be in alice's store now.
+        let accs: Vec<Addresses> = store.load_account_addresses(vec![0]).wait().unwrap();
+        assert_eq!(accs.len(), 1);
+        assert_eq!(accs[0].own_address, bob.address);
+        assert_eq!(accs[0].token_address, None);
 
         let s = store.clone();
         let cache = s.cache.read();
         let cached_data = cache.get(&IDEMPOTENCY.to_string()).unwrap();
 
         let cache_hits = s.cache_hits.read();
-        assert_eq!(*cache_hits, 4);
+        assert_eq!(*cache_hits, 2);
         assert_eq!(cached_data.0, 201);
         assert_eq!(cached_data.1, "CREATED".to_string());
+
+        m.assert();
     }
 
     #[test]
     fn test_receive_message() {
         let bob: TestAccount = BOB.clone();
-        let store = test_store(bob.clone(), false, false, false);
-        let engine = test_api(store.clone(), ALICE_PK.clone(), 0);
 
-        // create an account first
-        let create_account_details = json!({
-            "own_address": bob.address,
-            "token_address": null,
+        let body_se_data = serde_json::to_string(&PaymentDetailsResponse {
+            to: Addresses {
+                own_address: bob.address,
+                token_address: Some(bob.token_address),
+            },
+            tag: "some_tag".to_string(),
         })
-        .to_string();
-
-        let ret: Response<_> = block_on(engine.create_account(
-            bob.id.to_string(),
-            create_account_details.clone().into(),
-            None,
-        ))
         .unwrap();
+
+        let m = mockito::mock("POST", MESSAGES_API.clone())
+            .match_header("content-type", "application/octet-stream")
+            .with_status(200)
+            .with_body(body_se_data)
+            .expect(1) // only 1 request is made to the connector (idempotency works properly)
+            .create();
+        let connector_url = mockito::server_url();
+
+        let store = test_store(ALICE.clone(), false, false, false);
+        let engine = test_api(store.clone(), ALICE_PK.clone(), 0, connector_url);
+
+        let ret: Response<_> = block_on(engine.create_account(bob.id.to_string(), None)).unwrap();
         assert_eq!(ret.status().as_u16(), 201);
         assert_eq!(ret.body(), "CREATED");
 
-        let receive_message = ReceiveMessageDetails {
-            msg_type: MessageType::PaymentDetailsMessage,
-            data: vec![],
-        };
+        let receive_message = ReceiveMessageDetails::new_payment_details_request();
         let receive_message = serde_json::to_vec(&receive_message).unwrap();
         let ret: Response<_> = block_on(engine.receive_message(
             bob.id.to_string(),
@@ -702,26 +717,15 @@ mod tests {
         ))
         .unwrap();
         assert_eq!(ret.status().as_u16(), 200);
-        let resp = PaymentDetailsResponse {
-            to: ALICE.address,
-            tag: 0, // How do we calculate the tag?
-        };
-        let resp = serde_json::to_string(&resp).unwrap();
-        assert_eq!(ret.body(), &resp);
 
-        // unimplemented for other message types for now
-        let receive_message = ReceiveMessageDetails {
-            msg_type: MessageType::OtherMessage,
-            data: vec![],
+        // the data our SE will return to the node must match alice's addrs
+        let alice_addrs = Addresses {
+            own_address: ALICE.address,
+            token_address: None,
         };
-        let receive_message = serde_json::to_vec(&receive_message).unwrap();
-        let ret: Response<_> = block_on(engine.receive_message(
-            bob.id.to_string(),
-            receive_message,
-            Some(IDEMPOTENCY.to_owned()),
-        ))
-        .unwrap();
-        assert_eq!(ret.status().as_u16(), 200);
-        assert_eq!(ret.body(), "Not implemented");
+        let data: PaymentDetailsResponse = serde_json::from_str(ret.body()).unwrap();
+        assert!(data.tag.len() > 0);
+        assert_eq!(data.to, alice_addrs);
+        m.assert();
     }
 }

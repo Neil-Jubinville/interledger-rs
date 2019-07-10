@@ -241,16 +241,17 @@ where
         confs,
         poll_frequency,
         connector_url.parse().unwrap(),
+        None,
     );
 
     (engine, ganache_pid)
 }
 
-use url::Url;
 pub fn test_api<Si, S, A>(
     store: S,
     key: Si,
     confs: usize,
+    connector_url: String,
 ) -> EthereumLedgerSettlementEngine<S, Si, A>
 where
     Si: EthereumLedgerTxSigner + Clone + Send + Sync + 'static,
@@ -266,7 +267,8 @@ where
         chain_id,
         confs,
         poll_frequency,
-        Url::parse("http://127.0.0.1:7071").unwrap(),
+        connector_url.parse().unwrap(),
+        None,
     )
 }
 

@@ -26,8 +26,8 @@ impl_web! {
         }
 
         #[post("/accounts/:account_id")]
-        fn create_account(&self, account_id: String, body: Vec<u8>, idempotency_key: Option<String>) -> impl Future<Item = Response<String>, Error = Response<String>> {
-            self.engine.create_account(account_id, body, idempotency_key)
+        fn create_account(&self, account_id: String, idempotency_key: Option<String>) -> impl Future<Item = Response<String>, Error = Response<String>> {
+            self.engine.create_account(account_id, idempotency_key)
         }
 
         pub fn serve<I>(self, incoming: I) -> impl Future<Item = (), Error = ()>

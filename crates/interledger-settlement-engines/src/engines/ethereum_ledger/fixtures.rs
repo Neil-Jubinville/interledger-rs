@@ -14,4 +14,5 @@ lazy_static! {
     );
     pub static ref SETTLEMENT_API: Matcher =
         Matcher::Regex(r"^/accounts/\d*/settlement$".to_string());
+    pub static ref MESSAGES_API: Matcher = Matcher::Regex(r"^/accounts/\d*/messages$".to_string());
 }

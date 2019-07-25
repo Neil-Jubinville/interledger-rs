@@ -1,0 +1,30 @@
+replicaCount: 1
+restartPolicy: Never
+
+# Post hook wait
+sleepyTime: "10"
+
+#move these to secrets after
+ilp:
+  ilpAddress: "g.connector"   #check the uniqueness criteria - append a UUID
+  adminToken: "nodeadmintoken"
+
+
+image:
+  repository: neil/interledger-rs
+  tag: latest
+  pullPolicy: IfNotPresent
+
+service:
+  annotations: {}
+  clusterIP: ""
+  externalIPs: []
+  loadBalancerIP: ""
+  loadBalancerSourceRanges: []
+  port: 8888
+  type: NodePort
+  
+
+podAnnotations: {}
+resources: {}
+nodeSelector: {}

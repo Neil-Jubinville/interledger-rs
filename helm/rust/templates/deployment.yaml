@@ -1,0 +1,59 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:  
+  name: ilp-rust-node
+  labels:    
+    name: ilp-rust-node
+spec:
+
+  
+  selector:
+    matchLabels:
+      name: ilp-rust-node
+  replicas: 1
+  template:
+    metadata:     
+      labels:
+        name: ilp-rust-node
+    spec:      
+      containers:
+        - name: ilp-rust-node
+          imagePullPolicy: Never
+          image: "neil/interledger-rs"
+          ports:
+            - name: ilp-over-http
+              containerPort: 7770
+              hostPort: 7770
+              protocol: TCP
+            - name: ilp-over-btp
+              containerPort: 7768
+              hostPort: 7768
+              protocol: TCP
+          # This (and the volumes section below) mount the config map as a volume.
+          volumeMounts:
+            - mountPath: /ilpconf
+              name: ilp-conf-volume
+          env:
+            - name: ILP_ADDRESS
+              valueFrom:
+                configMapKeyRef:
+                  name: rust-ilpnode-config
+                  key: ilp.address
+            - name: ILP_ADMIN_TOKEN
+              valueFrom:
+                configMapKeyRef:
+                  name: rust-ilpnode-config
+                  key: ilp.admintoken
+            - name: RUST_LOG
+              valueFrom:
+                configMapKeyRef:
+                  name: rust-ilpnode-config
+                  key: ilp.loglevel
+
+
+         
+      
+      volumes:
+        - name: ilp-conf-volume
+          configMap:
+            name: rust-ilpnode-config

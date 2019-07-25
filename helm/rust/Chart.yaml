@@ -1,0 +1,12 @@
+name: rustilp
+description: ILP Rust Node
+version: 0.1.0
+kubeVersion: ">=1.2.0"
+keywords:
+  - ilp
+  - node
+  - rust
+  - interledger
+maintainers:
+  - name: Neil Jubinville
+    email: neil@orbitalsoftware.ca
